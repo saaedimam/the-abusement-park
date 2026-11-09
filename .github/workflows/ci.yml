@@ -10,9 +10,16 @@ on:
 permissions:
   contents: read
 
+# Pull requests still cancel a stale run on the same ref. Pushes do not share
+# that group. Two squash-merges about 20 seconds apart put both main runs in
+# ci-CI-refs/heads/main with cancel-in-progress. The earlier run was cancelled
+# before any job existed (run 42671854096, zero jobs). The replacement run then
+# finished as a failure with zero jobs and empty billable time (run 42671905974).
+# Giving each push its own group avoids that cancellation race. The checks
+# themselves were already green on the merged commits.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   validate:
