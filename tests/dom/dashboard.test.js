@@ -27,6 +27,12 @@ describe('historical dashboard DOM behavior', () => {
     expect(document.querySelectorAll('#stats-bar .stat')).toHaveLength(6);
     expect(document.querySelectorAll('#history .history-card')).toHaveLength(18);
     expect(document.querySelector('#stats-bar').textContent).toContain('18');
+    const mostTitles = document.querySelector('.stat-most-titles');
+    expect(mostTitles.querySelector('.stat-val').textContent).toBe('5');
+    expect(mostTitles.textContent).toContain('Mac Alvi');
+    expect(mostTitles.textContent).toContain('Abrar Siddique');
+    expect(document.querySelector('.stat-old-guards').textContent).toContain('The OGs');
+    expect(document.querySelector('.stat-named .stat-val').textContent).toBe('Abrar Siddique');
     const anjishu = [...document.querySelectorAll('#history .history-card')]
       .find((card) => card.getAttribute('aria-label').includes('Anjishu Bhattacharjee'));
     expect(anjishu).toBeTruthy();
@@ -207,6 +213,36 @@ describe('live standings DOM behavior', () => {
     expect(row.textContent).toContain('V Raya');
     expect(row.textContent).toContain('2 to play');
     expect(row.textContent).toContain('77 (−4) = 73');
+  });
+
+  it('explains career marks in words and skips a finished yet-to-play count', () => {
+    const { app } = setupDom();
+    const container = document.createElement('div');
+    app.renderLiveStandings(container, [{
+      entry: 570338,
+      playerName: 'Mac Alvi',
+      teamName: 'Stars',
+      rank: 1,
+      lastRank: 1,
+      seasons: 16,
+      careerBestPct: '0.3%',
+      careerBestSeason: '2014/15',
+      careerAvgPct: '14.9%',
+      yetToPlay: 0,
+      month: 1,
+      gameweek: 1,
+      season: 10,
+      squad: []
+    }]);
+
+    const text = container.textContent;
+    expect(text).toContain('16 seasons');
+    expect(text).toContain('Best 0.3%');
+    expect(text).toContain('Avg 14.9%');
+    expect(text).not.toContain('CBF');
+    expect(text).not.toContain('CAF');
+    expect(text).not.toContain('0 to play');
+    expect(container.querySelector('[title*="2014/15"]')).not.toBeNull();
   });
 
   it('renders league ownership and a two-manager archive rivalry', async () => {

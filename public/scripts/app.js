@@ -47,37 +47,39 @@ function updateView(mode, btn) {
   const stats = buildStats(mode);
   document.getElementById('standings-panel').setAttribute('aria-labelledby', btn.id);
 
-  const bottleFirst = stats.bottleLeader?.name.split(' ')[0] || '—';
+  const bottleName = stats.bottleLeader?.name || '—';
   const bottleTitle = stats.bottleLeader
     ? `${stats.bottleLeader.count} runner-up finish${stats.bottleLeader.count !== 1 ? 'es' : ''} in this view`
     : 'No runner-up data in this view';
   const mostTitleCount = stats.sorted[0]?.[1] || 0;
   const mostTitleLeaders = stats.sorted
     .filter(([, wins]) => wins === mostTitleCount)
-    .map(([name]) => name)
-    .join(' & ');
-  const mostTitleFirstNames = stats.sorted
-    .filter(([, wins]) => wins === mostTitleCount)
-    .map(([name]) => name.split(' ')[0])
-    .join(' & ');
-  const oldGuardTitle = OLD_GUARDS.map(manager => manager.name).join('\n');
-  const oldGuardRows = OLD_GUARDS.map(manager => {
-    return `<div class="old-guard-item"><span class="old-guard-name">${escapeHtml(manager.displayName)}</span></div>`;
-  }).join('');
+    .map(([name]) => name);
+  const mostTitleNames = mostTitleLeaders.join(' & ');
+  const reigningName = stats.data[stats.data.length - 1]?.winner || '—';
+  const oldGuardNames = OLD_GUARDS.map(manager => manager.name).join(', ');
+  const oldGuardItems = OLD_GUARDS.map(manager => `<li>${escapeHtml(manager.displayName)}</li>`).join('');
   document.getElementById('stats-bar').innerHTML = `
     <div class="stat"><div class="stat-val">${stats.total}</div><div class="stat-lbl">Seasons</div></div>
     <div class="stat"><div class="stat-val">${stats.uniqueChamps}</div><div class="stat-lbl">Champions</div></div>
-    <div class="stat"><div class="stat-val">${escapeHtml(stats.latestWinner)}</div><div class="stat-lbl">Reigning Champ</div></div>
-    <div class="stat" title="${escapeHtml(bottleTitle)}"><div class="stat-val">${escapeHtml(bottleFirst)}</div><div class="stat-lbl">Chief Bottler</div></div>
-    <div class="stat" title="${escapeHtml(mostTitleLeaders)} · ${mostTitleCount} title${mostTitleCount !== 1 ? 's' : ''} each"><div class="stat-val">${escapeHtml(mostTitleFirstNames)} - ${mostTitleCount}</div><div class="stat-lbl">Most Titles</div></div>
-    <div class="stat stat-old-guards" title="${escapeHtml(oldGuardTitle)}" aria-label="The OGs"><div class="old-guards-list">${oldGuardRows}</div><div class="stat-lbl">THE OG's</div></div>
+    <div class="stat stat-named"><div class="stat-val stat-val-text">${escapeHtml(reigningName)}</div><div class="stat-lbl">Reigning champ</div></div>
+    <div class="stat stat-named" title="${escapeHtml(bottleTitle)}"><div class="stat-val stat-val-text">${escapeHtml(bottleName)}</div><div class="stat-lbl">Chief bottler</div></div>
+    <div class="stat stat-most-titles" title="${escapeHtml(mostTitleNames)} · ${mostTitleCount} title${mostTitleCount !== 1 ? 's' : ''} each">
+      <div class="stat-val">${mostTitleCount}</div>
+      <p class="stat-detail">${escapeHtml(mostTitleNames)}</p>
+      <div class="stat-lbl">Most titles</div>
+    </div>
+    <div class="stat stat-old-guards" title="${escapeHtml(oldGuardNames)}" aria-label="The OGs: ${escapeHtml(oldGuardNames)}">
+      <ul class="old-guards-list">${oldGuardItems}</ul>
+      <div class="stat-lbl">The OGs</div>
+    </div>
   `;
 
   renderPodium(stats.sorted);
 
   const standingsEl = document.getElementById('standings');
   standingsEl.innerHTML = '';
-  stats.sorted.forEach(([name, wins], i) => {
+  stats.sorted.forEach(([name], i) => {
     const safeName = escapeHtml(name);
     const wonYears = stats.data.filter(s => s.winner === name).map(s => s.year.slice(-2));
     const streak = trailingStreak(stats.data, name);

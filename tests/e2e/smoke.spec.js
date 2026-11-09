@@ -105,6 +105,19 @@ test('archive dialog opens, handles missing image, closes with Escape, and resto
   await expect(card).toBeFocused();
 });
 
+test('stats cards and the show-more control do not clip their text', async ({ page }) => {
+  await expect(page.locator('#live-widget-content .live-row')).toHaveCount(2);
+  const clipped = await page.evaluate(() => {
+    const nodes = [
+      ...document.querySelectorAll('.stat-val, .stat-detail, .stat-lbl, .old-guards-list, .live-toggle, .live-jump a')
+    ];
+    return nodes
+      .filter((node) => node.scrollWidth > node.clientWidth + 1)
+      .map((node) => node.textContent.trim());
+  });
+  expect(clipped).toEqual([]);
+});
+
 test('page has no JavaScript exceptions or horizontal overflow', async ({ page }) => {
   const exceptions = [];
   page.on('pageerror', (error) => exceptions.push(error.message));
