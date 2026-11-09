@@ -14,7 +14,9 @@ export default defineConfig({
   use: {
     baseURL: `http://127.0.0.1:${port}`,
     trace: 'retain-on-failure',
-    screenshot: 'only-on-failure'
+    screenshot: 'only-on-failure',
+    // Fade-in animations otherwise let axe sample semi-transparent text.
+    reducedMotion: 'reduce',
   },
   projects: [
     { name: 'mobile-320', use: { browserName: 'chromium', viewport: { width: 320, height: 568 } } },
@@ -23,7 +25,7 @@ export default defineConfig({
     { name: 'desktop', use: { browserName: 'chromium', viewport: { width: 1440, height: 900 } } }
   ],
   webServer: {
-    command: `npx wrangler pages dev public --port ${port}`,
+    command: `E2E_PORT=${port} node scripts/e2e-web-server.mjs`,
     url: `http://127.0.0.1:${port}`,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000

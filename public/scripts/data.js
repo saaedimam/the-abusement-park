@@ -7,6 +7,21 @@ export const MANAGERS_EXTRA = [
   { name: 'Wakif Mahmud', avatarUrl: '', since: '2015/16' }, // joined mid-era
 ];
 
+// Archive screenshots that are referenced by seasons[] but are not in public/images/.
+// Do not invent replacements. Remove a path from this list only when the real file is added.
+export const MISSING_ARCHIVE_IMAGES = [
+  'images/2009.png',
+  'images/2010.png',
+  'images/2011.png',
+  'images/2012.png',
+  'images/2013.png',
+  'images/2014.png',
+  'images/2015.png',
+  'images/2017.png',
+  'images/2019.png',
+  'images/2021.png',
+];
+
 export const seasons = [
   { year: "2008/09", winner: "Mac Alvi",              runnerUp: "", img: "images/2009.png" },
   { year: "2009/10", winner: "Mac Alvi",              runnerUp: "", img: "images/2010.png" },

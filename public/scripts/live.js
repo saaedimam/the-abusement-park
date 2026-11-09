@@ -27,10 +27,11 @@ export function renderNextDeadline(nextDeadline) {
 }
 
 export function renderLiveRow(team, squadExpanded = false) {
-  // Lower rank number = better position.
-  const trend = team.lastRank !== 0 && team.rank < team.lastRank
+  // Lower rank number = better position. A missing previous rank is not a decline.
+  const hasLastRank = Number.isInteger(team.lastRank) && team.lastRank > 0;
+  const trend = hasLastRank && team.rank < team.lastRank
     ? '<span class="live-trend trend-up" role="img" aria-label="Rank improved"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 10 4-4 4 4"/></svg></span>'
-    : team.lastRank !== 0 && team.rank > team.lastRank
+    : hasLastRank && team.rank > team.lastRank
       ? '<span class="live-trend trend-down" role="img" aria-label="Rank declined"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></span>'
       : '<span class="live-trend trend-flat" role="img" aria-label="Rank unchanged"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8"/></svg></span>';
 
@@ -169,8 +170,8 @@ export async function loadLiveStandings() {
       const metrics = managerMetrics[String(team.entry)] || {};
       return {
         entry: team.entry,
-        playerName: team.player_name,
-        teamName: team.entry_name,
+        playerName: team.player_name || 'Unknown manager',
+        teamName: team.entry_name || 'Unknown team',
         careerBestPct: career?.careerBestPct ?? metrics.careerBestPct,
         careerBestSeason: career?.careerBestSeason ?? metrics.careerBestSeason,
         careerAvgPct: career?.careerAvgPct ?? metrics.careerAvgPct,
@@ -188,8 +189,8 @@ export async function loadLiveStandings() {
       const metrics = managerMetrics[String(team.entry)] || {};
       return {
         entry: team.entry,
-        playerName: `${team.player_first_name} ${team.player_last_name}`,
-        teamName: team.entry_name,
+        playerName: [team.player_first_name, team.player_last_name].filter(Boolean).join(' ') || 'Unknown manager',
+        teamName: team.entry_name || 'Unknown team',
         careerBestPct: career?.careerBestPct ?? metrics.careerBestPct,
         careerBestSeason: career?.careerBestSeason ?? metrics.careerBestSeason,
         careerAvgPct: career?.careerAvgPct ?? metrics.careerAvgPct,
@@ -204,11 +205,18 @@ export async function loadLiveStandings() {
     });
     const rows = standingsRows.length ? standingsRows : newEntryRows;
     renderLiveStandings(container, rows);
+    const stale = data.meta?.stale === true || data.meta?.freshness === 'stale';
+    const degraded = !stale && (data.meta?.degraded === true || data.meta?.freshness === 'degraded');
+    const heading = document.querySelector('#live-widget-section .section-label');
+    if (heading && stale) heading.textContent = 'Last known standings (not live)';
     if (data.meta?.fetchedAt) {
       const updated = new Date(data.meta.fetchedAt);
+      const time = updated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const status = document.createElement('div');
       status.className = 'empty-note';
-      status.textContent = `Last updated ${updated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+      if (stale) status.textContent = `Stale standings from ${time}. These are not live results.`;
+      else if (degraded) status.textContent = `Last updated ${time}. Some live details are unavailable.`;
+      else status.textContent = `Last updated ${time}`;
       container.appendChild(status);
     }
   } catch (error) {

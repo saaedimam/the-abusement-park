@@ -719,6 +719,8 @@ body {
   .live-squad-bench > span { font-size: 12px; }
 }
 
+.share-actions { text-align: center; margin-top: 16px; }
+
 /* Action Button (Bragging Rights) */
 .action-btn {
   background: linear-gradient(135deg, rgba(124,95,230,0.18), rgba(0,230,118,0.18));

@@ -108,6 +108,23 @@ test('local Cloudflare Pages routing reaches the standings Function', async ({ r
   await expect(response.json()).resolves.toEqual({ error: 'Method not allowed.' });
 });
 
+test('GET /api/standings returns the stubbed upstream contract', async ({ request }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'One route integration check is sufficient.');
+
+  const response = await request.get('/api/standings');
+  expect(response.status()).toBe(200);
+  const body = await response.json();
+  expect(body.standings.results.map((row) => row.entry)).toEqual([101, 202]);
+  expect(body.meta).toMatchObject({
+    leagueId: '113546',
+    freshness: 'fresh',
+    stale: false,
+    degraded: false
+  });
+  expect(body.meta.managerMetrics['101'].season).toBe(100);
+  expect(body.meta.managerMetrics['202'].season).toBe(90);
+});
+
 test('automated accessibility baseline has no critical or serious violations', async ({ page }, testInfo) => {
   const results = await new AxeBuilder({ page }).analyze();
   const severe = results.violations.filter((violation) =>

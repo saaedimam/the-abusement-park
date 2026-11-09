@@ -28,7 +28,7 @@ Edit the reviewed configuration and archive data in `public/scripts/data.js`:
 
 **Avatars:** e.g. `{ name: 'Mac Alvi', avatarUrl: 'images/avatars/mac.png' }` in `MANAGERS_EXTRA` or extend winner entries.
 
-**Screenshots:** Save PNGs in `public/images/` matching each `img` path (e.g. `images/2026.png`).
+**Screenshots:** Save PNGs in `public/images/` matching each `img` path (e.g. `images/2026.png`). Ten seasons do not have a screenshot yet. Those paths are listed in [`docs/missing-archive-images.md`](docs/missing-archive-images.md) and the lightbox shows “Screenshot not available” without requesting them. Do not add placeholder images.
 
 ## Local development and testing
 
@@ -66,7 +66,13 @@ This static application has no compilation step. `npm run build` performs static
 
 Tests use small deterministic fixtures under `tests/fixtures/`. CI must not call the live FPL API or assert volatile rankings, deadlines, points, or manager counts. Coverage output is written to `coverage/`, with risk-based thresholds focused on the Cloudflare API Function.
 
-The dedicated `.github/workflows/ci.yml` workflow validates pull requests and `main` without deploying. The legacy GitHub Pages workflow is manual-only because GitHub Pages cannot execute `functions/api/standings.js`; production continues to use Cloudflare Pages. Repository administrators must configure `main` branch protection to require `Lint, test, and coverage` plus both browser-regression shard checks before merging.
+The dedicated `.github/workflows/ci.yml` workflow validates pull requests and `main` without deploying. The legacy GitHub Pages workflow is manual-only because GitHub Pages cannot execute `functions/api/standings.js`; production continues to use Cloudflare Pages. Repository administrators must configure `main` branch protection to require these three checks before merging:
+
+- `Lint, test, and coverage`
+- `Browser regression (1/2)`
+- `Browser regression (2/2)`
+
+Branch protection itself is a repository setting and is not stored in this repo. The preview smoke check does not run unless the `SMOKE_BASE_URL` repository variable is set to the immutable Cloudflare deployment URL for the commit under test. That hostname is a Cloudflare deployment id, not the git SHA, and resolving it requires the Cloudflare API. This workflow has no Cloudflare credentials, so it does not guess the mutable `https://<branch>.<project>.pages.dev` alias.
 
 Known limitations and the accessibility baseline are documented in [`docs/testing-baseline.md`](docs/testing-baseline.md).
 
@@ -84,14 +90,22 @@ npx wrangler pages dev public
 ```
 
 Then open the URL printed by Wrangler. After authenticating Wrangler, deploy
-with:
+from the repository root with:
 
 ```sh
-npx wrangler pages deploy .
+npx wrangler pages deploy
 ```
 
+Wrangler 4 reads `pages_build_output_dir` from `wrangler.jsonc` when no directory is passed, so this uploads `public/` and does not upload the rest of the repository. Pages Functions are not taken from inside that directory: `wrangler pages deploy` bundles `./functions` relative to the working directory (this repo’s `functions/api/standings.js`). Run the command from the repository root. Do not pass `.` as the directory; that uploads the repository itself. `npm run deploy` is the same command.
+
 Failed FPL requests display an explicit unavailable state instead of presenting
-hard-coded rows as live data.
+hard-coded rows as live data. A standings outage serves the last successful
+payload with `meta.freshness` set to `stale` and `meta.stale` set to `true`.
+
+`html2canvas` 1.4.1 is vendored at `public/vendor/html2canvas.min.js` (MIT).
+`public/_headers` sends a report-only Content Security Policy for Pages static
+files. It allows this origin plus Google Fonts and does not enforce yet, so a
+report cannot block the page.
 
 ## License
 MIT License.
