@@ -4,6 +4,8 @@
 
 No automated application tests, test runner, package manifest, lockfile, lint configuration, or dedicated Cloudflare test configuration are tracked at `c9b768d`. The GitHub workflow deploys but does not validate (`.github/workflows/static.yml:24-43`).
 
+Production site: <https://the-abusement-park.pages.dev/>.
+
 Checks executed during Phase 0:
 
 | Check | Result |

@@ -2,6 +2,8 @@
 
 Welcome to the official home of **The Abusement Park**, the premier Fantasy Premier League (FPL) mini-league where suffering meets glory.
 
+The live site is <https://the-abusement-park.pages.dev/>.
+
 ## About
 Founded in 2008, this league has hosted 18 seasons of high-stakes FPL management. This repository contains the source code for our historical dashboard, tracking winners, statistics, and season-by-season performance data.
 
@@ -78,7 +80,7 @@ Known limitations and the accessibility baseline are documented in [`docs/testin
 
 ## Cloudflare Pages
 
-The live standings are served by the Pages Function at `/api/standings`. It
+The live site is <https://the-abusement-park.pages.dev/>. Standings are served by the Pages Function at `/api/standings`. It
 fetches league `113546` directly from FPL, validates the response, and caches
 successful results at the edge for two minutes. The browser no longer depends
 on a public CORS proxy.

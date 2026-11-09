@@ -51,7 +51,7 @@ This inventory records behavior present on `main` at `c9b768d`. â€œImplementedâ€
 
 | Capability | Status | Evidence |
 | --- | --- | --- |
-| Cloudflare Pages static hosting | Configured and live | `wrangler.jsonc:1-6` |
+| Cloudflare Pages static hosting | Live at <https://the-abusement-park.pages.dev/> | `wrangler.jsonc:1-6` |
 | Pages Function routing restricted to `/api/*` | Configured | `_routes.json:1-5` |
 | Server-side FPL requests | Implemented | `functions/api/standings.js:18-23,133-177` |
 | Edge cache | Implemented with 120-second aggregate TTL | `functions/api/standings.js:5,122-131,188-195` |
