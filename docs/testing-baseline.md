@@ -2,6 +2,8 @@
 
 ## Repository verification and implementation checklist
 
+Canonical site: <https://the-abusement-park.pages.dev/>. The GitHub Pages workflow is a manual static fallback, not the primary site.
+
 Verified against `origin/main` at merge commit `9ba7965` before implementation:
 
 - [x] Phase 0 audit documents are present on `main`.

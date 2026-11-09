@@ -3,7 +3,7 @@
 ## Principles
 
 1. Keep Cloudflare Pages and Pages Functions.
-2. Preserve the existing URL, historical archive, live standings payload, and competitive tone.
+2. Preserve the existing URL (<https://the-abusement-park.pages.dev/>), historical archive, live standings payload, and competitive tone.
 3. Add regression protection before structural refactors.
 4. Separate data types by freshness and failure mode.
 5. Treat FPL entry IDs and reviewed internal manager IDs as identities; names are labels and aliases.
