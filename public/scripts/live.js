@@ -1,6 +1,6 @@
 import { LEAGUE_ID } from './data.js';
 import { currentPlayerByEntry, escapeHtml, fplProfileUrl } from './domain.js';
-import { chipBadge, formatHitScore, leagueOwnership, rankMovement, rivalryRecord } from './league.js';
+import { archiveIdentity, chipBadge, formatHitScore, leagueOwnership, rankMovement, rivalryRecord } from './league.js';
 
 // --- FEATURE: Live FPL Standings ---
 export function liveScore(value) {
@@ -46,6 +46,30 @@ function gameweekMarkup(team) {
   return `<span class="live-score"><small>GW</small><span class="live-gw-net">${escapeHtml(team.gameweek)}</span><span class="live-gw-hit">${escapeHtml(equation)}</span></span>`;
 }
 
+function managerLabel(entry, fplName) {
+  const safeFplName = fplName || 'Unknown manager';
+  const archiveName = archiveIdentity(entry);
+  return {
+    playerName: archiveName || safeFplName,
+    fplName: archiveName && archiveName !== safeFplName ? safeFplName : '',
+  };
+}
+
+function careerMarkup(team) {
+  const bits = [];
+  if (team.seasons) {
+    bits.push(`<span class="live-meta" title="Seasons recorded for this manager">${team.seasons} seasons</span>`);
+  }
+  if (team.careerBestPct) {
+    const season = team.careerBestSeason ? `, ${escapeHtml(team.careerBestSeason)}` : '';
+    bits.push(`<span class="live-meta" title="Career best finish ${escapeHtml(team.careerBestPct)}${season}">Best ${escapeHtml(team.careerBestPct)}</span>`);
+  }
+  if (team.careerAvgPct) {
+    bits.push(`<span class="live-meta" title="Career average finish">Avg ${escapeHtml(team.careerAvgPct)}</span>`);
+  }
+  return bits.length ? `<div class="live-team-line">${bits.join('')}</div>` : '';
+}
+
 function flagsMarkup(team) {
   const chip = chipBadge(team.chip);
   const chipHtml = chip
@@ -57,7 +81,7 @@ function flagsMarkup(team) {
   const vice = team.vice?.name
     ? `<span class="live-role" aria-label="Vice-captain ${escapeHtml(team.vice.name)}">V ${escapeHtml(team.vice.name)}</span>`
     : '';
-  const toPlay = Number.isInteger(team.yetToPlay)
+  const toPlay = Number.isInteger(team.yetToPlay) && team.yetToPlay > 0
     ? `<span class="live-meta" aria-label="${team.yetToPlay} ${team.yetToPlay === 1 ? 'player' : 'players'} yet to play">${team.yetToPlay} to play</span>`
     : '';
   if (!chipHtml && !captain && !vice && !toPlay) return '';
@@ -82,15 +106,11 @@ export function renderLiveRow(team, squadExpanded = false) {
         <div class="live-rank"><span class="sr-only">Position </span>${team.rank}${trend}</div>
         <div class="live-identity">
           <div class="live-manager-line">
-            <div class="live-manager"><a class="live-profile-link" href="${fplProfileUrl(team.entry)}" target="_blank" rel="noopener noreferrer">${escapeHtml(team.playerName)}</a></div>
+            <div class="live-manager"><a class="live-profile-link" href="${fplProfileUrl(team.entry)}" target="_blank" rel="noopener noreferrer"${team.fplName ? ` title="FPL profile · ${escapeHtml(team.fplName)}"` : ''}>${escapeHtml(team.playerName)}</a></div>
             <span class="live-team">${escapeHtml(team.teamName)}</span>
           </div>
           ${flagsMarkup(team)}
-          <div class="live-team-line">
-            ${team.seasons ? `<span class="live-meta" title="Seasons played" aria-label="${team.seasons} seasons">S ${team.seasons}</span>` : ''}
-            ${team.careerBestPct ? `<span class="live-meta" title="Career Best Finish · ${escapeHtml(team.careerBestSeason)}" aria-label="Career Best Finish ${escapeHtml(team.careerBestPct)}, ${escapeHtml(team.careerBestSeason)}">CBF ${escapeHtml(team.careerBestPct)}</span>` : ''}
-            ${team.careerAvgPct ? `<span class="live-meta live-meta-caf" title="Career Average Finish" aria-label="Career Average Finish ${escapeHtml(team.careerAvgPct)}">CAF ${escapeHtml(team.careerAvgPct)}</span>` : ''}
-          </div>
+          ${careerMarkup(team)}
         </div>
         <div class="live-performance" aria-label="Month ${liveScore(team.month)}, gameweek ${formatHitScore(team.gameweekGross, team.hitCost, team.gameweek) || liveScore(team.gameweek)}, season ${liveScore(team.season)}">
           <span class="live-score"><small>Month</small>${liveScore(team.month)}</span>
@@ -154,6 +174,7 @@ export function renderLiveRows(rows, expanded = false, expandedSquads = new Set(
       <div class="live-table-head" aria-hidden="true">
         <span></span><span></span>
         <div class="live-score-head"><span>${currentMonth}</span><span>GW</span><span>Season</span></div>
+        <span></span>
       </div>
       ${visibleRows.map(team => renderLiveRow(team, expandedSquads.has(team.entry))).join('')}
       ${hiddenCount ? `<button type="button" class="live-toggle" aria-expanded="${expanded}" data-live-toggle>${expanded ? 'Show top 5' : `Show ${hiddenCount} more`}</button>` : ''}
@@ -186,6 +207,13 @@ function ownerPhrase(owner) {
   return `${escapeHtml(owner.managerName)}${owner.benched ? ' (bench)' : ''}`;
 }
 
+function ownershipNote(ownership) {
+  const loaded = `${ownership.managersCounted} squad${ownership.managersCounted === 1 ? '' : 's'} loaded`;
+  if (!ownership.squadsUnavailable) return `This mini-league only. ${loaded}.`;
+  const missing = `${ownership.squadsUnavailable} could not be loaded`;
+  return `This mini-league only. ${loaded}. ${missing}. Refresh the page to try again.`;
+}
+
 function renderOwnership(managers) {
   const ownership = leagueOwnership(managers);
   if (!ownership.managersCounted) {
@@ -203,15 +231,21 @@ function renderOwnership(managers) {
   const everyone = ownership.players.map(player => `
     <li><span class="live-pick-name">${escapeHtml(player.name)}</span>
       <span>${player.owners.length} own, ${player.benched} bench${player.captains.length ? `, C ${player.captains.map(owner => escapeHtml(owner.managerName)).join(', ')}` : ''}</span></li>`).join('');
+  const gap = ownership.squadsUnavailable
+    ? `<p class="live-gap" role="status">${ownership.squadsUnavailable} squad${ownership.squadsUnavailable === 1 ? '' : 's'} missing from this view.</p>`
+    : '';
   return `<section class="live-panel" aria-labelledby="live-ownership-title">
     <h3 id="live-ownership-title" class="live-panel-title">League picks</h3>
-    <p class="live-panel-note">This mini-league only. ${ownership.managersCounted} squad${ownership.managersCounted === 1 ? '' : 's'} loaded${ownership.squadsUnavailable ? `, ${ownership.squadsUnavailable} unavailable` : ''}.</p>
+    <p class="live-panel-note">${ownershipNote(ownership)}</p>
+    ${gap}
     <h4 class="live-panel-label">Captains</h4>
     ${captains ? `<ul class="live-pick-list">${captains}</ul>` : '<p class="empty-note">No captain is marked.</p>'}
-    <h4 class="live-panel-label">Owned by one manager</h4>
-    ${differentials ? `<ul class="live-pick-list">${differentials}</ul>` : '<p class="empty-note">No single-manager picks.</p>'}
     <details class="live-pick-details">
-      <summary>Every pick in the league</summary>
+      <summary>Owned by one manager (${ownership.differentials.length})</summary>
+      ${differentials ? `<ul class="live-pick-list">${differentials}</ul>` : '<p class="empty-note">No single-manager picks.</p>'}
+    </details>
+    <details class="live-pick-details">
+      <summary>Every pick in the league (${ownership.players.length})</summary>
       <ul class="live-pick-list">${everyone}</ul>
     </details>
   </section>`;
@@ -221,12 +255,17 @@ function squadList(manager) {
   const squad = manager.squad || [];
   const starting = squad.filter(player => !((player.multiplier === 0 || player.slot > 11) && !player.projectedIn) && !player.projectedOut);
   const bench = squad.filter(player => !starting.includes(player));
-  const item = player => `<li>${escapeHtml(player.name)} <span>${player.captain ? 'C ' : ''}${player.viceCaptain ? 'V ' : ''}${liveScore(player.points)}</span></li>`;
-  return `<div class="live-compare-side">
-    <h4 class="live-panel-label">${escapeHtml(manager.playerName)}</h4>
-    ${squad.length ? `<p class="live-compare-kicker">Playing</p><ul class="live-pick-list">${starting.map(item).join('')}</ul>
-      ${bench.length ? `<p class="live-compare-kicker">Bench</p><ul class="live-pick-list">${bench.map(item).join('')}</ul>` : ''}` : '<p class="empty-note">Squad unavailable.</p>'}
-  </div>`;
+  const item = player => `<li><span class="live-pick-name">${escapeHtml(player.name)}</span> <span>${player.captain ? 'C ' : ''}${player.viceCaptain ? 'V ' : ''}${liveScore(player.points)}</span></li>`;
+  return `<article class="live-compare-side">
+    <h4 class="live-compare-name">${escapeHtml(manager.playerName)}</h4>
+    ${squad.length ? `<h5 class="live-compare-kicker">Playing</h5><ul class="live-pick-list">${starting.map(item).join('')}</ul>
+      ${bench.length ? `<h5 class="live-compare-kicker">Bench</h5><ul class="live-pick-list">${bench.map(item).join('')}</ul>` : ''}` : '<p class="empty-note">Squad unavailable.</p>'}
+  </article>`;
+}
+
+function nameList(players) {
+  if (!players.length) return '<p class="empty-note">None</p>';
+  return `<ul class="live-name-list">${players.map(player => `<li>${escapeHtml(player.name)}</li>`).join('')}</ul>`;
 }
 
 function renderComparison(left, right) {
@@ -236,9 +275,6 @@ function renderComparison(left, right) {
   const shared = (left.squad || []).filter(player => rightIds.has(player.id));
   const onlyLeft = (left.squad || []).filter(player => !rightIds.has(player.id));
   const onlyRight = (right.squad || []).filter(player => !leftIds.has(player.id));
-  const names = players => players.length
-    ? players.map(player => escapeHtml(player.name)).join(', ')
-    : 'None';
   const rivalry = rivalryRecord(left.entry, right.entry);
   const rivalryHtml = rivalry.available
     ? `<section class="live-rivalry" aria-label="Archive rivalry">
@@ -250,12 +286,12 @@ function renderComparison(left, right) {
       </section>`
     : `<section class="live-rivalry" aria-label="Archive rivalry"><h4 class="live-panel-label">Archive rivalry</h4><p class="live-panel-note">${escapeHtml(rivalry.note)}</p></section>`;
   return `<div class="live-compare-squads">${squadList(left)}${squadList(right)}</div>
-    <h4 class="live-panel-label">Shared</h4>
-    <p>${names(shared)}</p>
-    <h4 class="live-panel-label">Only ${escapeHtml(left.playerName)}</h4>
-    <p>${names(onlyLeft)}</p>
-    <h4 class="live-panel-label">Only ${escapeHtml(right.playerName)}</h4>
-    <p>${names(onlyRight)}</p>
+    <h4 class="live-panel-label">Shared (${shared.length})</h4>
+    ${nameList(shared)}
+    <h4 class="live-panel-label">Only ${escapeHtml(left.playerName)} (${onlyLeft.length})</h4>
+    ${nameList(onlyLeft)}
+    <h4 class="live-panel-label">Only ${escapeHtml(right.playerName)} (${onlyRight.length})</h4>
+    ${nameList(onlyRight)}
     ${rivalryHtml}`;
 }
 
@@ -264,8 +300,8 @@ function renderCompareControls(rows) {
   return `<section class="live-panel" aria-labelledby="live-compare-title">
     <h3 id="live-compare-title" class="live-panel-title">Compare managers</h3>
     <div class="live-compare-picks">
-      <label>First manager <select id="compare-a">${options}</select></label>
-      <label>Second manager <select id="compare-b">${options}</select></label>
+      <label for="compare-a">First manager <select id="compare-a">${options}</select></label>
+      <label for="compare-b">Second manager <select id="compare-b">${options}</select></label>
     </div>
     <div id="live-compare-result" aria-live="polite"></div>
   </section>`;
@@ -298,22 +334,46 @@ function bindComparison(rows) {
   draw();
 }
 
+function setLiveJump(rows) {
+  const jump = document.getElementById('live-jump');
+  if (!jump) return;
+  jump.hidden = !rows;
+  const compareLink = document.getElementById('live-jump-compare');
+  if (compareLink) compareLink.hidden = !rows || rows.length < 2;
+}
+
 function showLivePanels(rows) {
   const ownership = document.getElementById('live-ownership');
   if (ownership) {
     ownership.hidden = false;
     ownership.innerHTML = renderOwnership(rows);
   }
+  setLiveJump(rows);
   bindComparison(rows);
 }
 
 function hideLivePanels() {
+  setLiveJump(null);
   for (const id of ['live-ownership', 'live-compare']) {
     const panel = document.getElementById(id);
     if (!panel) continue;
     panel.hidden = true;
     panel.innerHTML = '';
   }
+}
+
+function hasStandings(data) {
+  return Array.isArray(data?.standings?.results) && Array.isArray(data?.new_entries?.results);
+}
+
+async function fetchStandingsPayload() {
+  const response = await fetch('./api/standings', {
+    headers: { Accept: 'application/json' },
+  });
+  if (!response.ok) throw new Error('Network response was not ok');
+  const data = await response.json();
+  if (!hasStandings(data)) throw new Error('Standings payload was incomplete');
+  return data;
 }
 
 export async function loadLiveStandings() {
@@ -325,20 +385,27 @@ export async function loadLiveStandings() {
   }
 
   try {
-    const response = await fetch('./api/standings', {
-      headers: { Accept: 'application/json' },
-    });
-    if (!response.ok) throw new Error('Network response was not ok');
-
-    const data = await response.json();
+    let data = await fetchStandingsPayload();
+    // A cold function can run out of subrequests before every history is stored.
+    // The picks bundle is saved first, so one retry finishes the league.
+    if (data.meta?.incomplete === true) {
+      try {
+        const retry = await fetchStandingsPayload();
+        if (hasStandings(retry)) data = retry;
+      } catch {
+        // Render the first payload. Its status line explains any remaining gap.
+      }
+    }
     renderNextDeadline(data.meta?.nextDeadline);
     const managerMetrics = data.meta?.managerMetrics || {};
     const standingsRows = data.standings.results.map(team => {
       const career = currentPlayerByEntry.get(team.entry);
       const metrics = managerMetrics[String(team.entry)] || {};
+      const label = managerLabel(team.entry, team.player_name);
       return {
         entry: team.entry,
-        playerName: team.player_name || 'Unknown manager',
+        playerName: label.playerName,
+        fplName: label.fplName,
         teamName: team.entry_name || 'Unknown team',
         careerBestPct: career?.careerBestPct ?? metrics.careerBestPct,
         careerBestSeason: career?.careerBestSeason ?? metrics.careerBestSeason,
@@ -362,9 +429,12 @@ export async function loadLiveStandings() {
     const newEntryRows = data.new_entries.results.map((team, index) => {
       const career = currentPlayerByEntry.get(team.entry);
       const metrics = managerMetrics[String(team.entry)] || {};
+      const fplName = [team.player_first_name, team.player_last_name].filter(Boolean).join(' ');
+      const label = managerLabel(team.entry, fplName);
       return {
         entry: team.entry,
-        playerName: [team.player_first_name, team.player_last_name].filter(Boolean).join(' ') || 'Unknown manager',
+        playerName: label.playerName,
+        fplName: label.fplName,
         teamName: team.entry_name || 'Unknown team',
         careerBestPct: career?.careerBestPct ?? metrics.careerBestPct,
         careerBestSeason: career?.careerBestSeason ?? metrics.careerBestSeason,
@@ -395,8 +465,9 @@ export async function loadLiveStandings() {
     if (data.meta?.fetchedAt) {
       const updated = new Date(data.meta.fetchedAt);
       const time = updated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const status = document.createElement('div');
-      status.className = 'empty-note';
+      const status = document.createElement('p');
+      status.className = 'live-status';
+      status.setAttribute('role', 'status');
       if (stale) status.textContent = `Stale standings from ${time}. These are not live results.`;
       else if (degraded) status.textContent = `Last updated ${time}. Some live details are unavailable.`;
       else status.textContent = `Last updated ${time}`;

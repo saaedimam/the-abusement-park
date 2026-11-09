@@ -27,6 +27,12 @@ describe('historical dashboard DOM behavior', () => {
     expect(document.querySelectorAll('#stats-bar .stat')).toHaveLength(6);
     expect(document.querySelectorAll('#history .history-card')).toHaveLength(18);
     expect(document.querySelector('#stats-bar').textContent).toContain('18');
+    const mostTitles = document.querySelector('.stat-most-titles');
+    expect(mostTitles.querySelector('.stat-val').textContent).toBe('5');
+    expect(mostTitles.textContent).toContain('Mac Alvi');
+    expect(mostTitles.textContent).toContain('Abrar Siddique');
+    expect(document.querySelector('.stat-old-guards').textContent).toContain('The OGs');
+    expect(document.querySelector('.stat-named .stat-val').textContent).toBe('Abrar Siddique');
     const anjishu = [...document.querySelectorAll('#history .history-card')]
       .find((card) => card.getAttribute('aria-label').includes('Anjishu Bhattacharjee'));
     expect(anjishu).toBeTruthy();
@@ -209,6 +215,36 @@ describe('live standings DOM behavior', () => {
     expect(row.textContent).toContain('77 (−4) = 73');
   });
 
+  it('explains career marks in words and skips a finished yet-to-play count', () => {
+    const { app } = setupDom();
+    const container = document.createElement('div');
+    app.renderLiveStandings(container, [{
+      entry: 570338,
+      playerName: 'Mac Alvi',
+      teamName: 'Stars',
+      rank: 1,
+      lastRank: 1,
+      seasons: 16,
+      careerBestPct: '0.3%',
+      careerBestSeason: '2014/15',
+      careerAvgPct: '14.9%',
+      yetToPlay: 0,
+      month: 1,
+      gameweek: 1,
+      season: 10,
+      squad: []
+    }]);
+
+    const text = container.textContent;
+    expect(text).toContain('16 seasons');
+    expect(text).toContain('Best 0.3%');
+    expect(text).toContain('Avg 14.9%');
+    expect(text).not.toContain('CBF');
+    expect(text).not.toContain('CAF');
+    expect(text).not.toContain('0 to play');
+    expect(container.querySelector('[title*="2014/15"]')).not.toBeNull();
+  });
+
   it('renders league ownership and a two-manager archive rivalry', async () => {
     const payload = {
       standings: {
@@ -275,6 +311,82 @@ describe('live standings DOM behavior', () => {
     compare.querySelector('#compare-b').value = '570338';
     compare.querySelector('#compare-b').dispatchEvent(new window.Event('change'));
     expect(compare.textContent).toContain('Choose two different managers.');
+  });
+
+  it('retries once when the first standings payload is incomplete', async () => {
+    const squad = (id, name) => [{ id, name, multiplier: 2, slot: 3, points: 8, captain: true, viceCaptain: false }];
+    const row = (entry, name, total) => ({
+      entry, entry_name: `${name} FC`, player_name: name, rank: entry, last_rank: entry, total
+    });
+    const metric = (playerId, playerName, points) => ({
+      picksKnown: true,
+      month: points,
+      gameweek: points,
+      season: points,
+      captain: { id: playerId, name: playerName },
+      vice: null,
+      yetToPlay: 0,
+      squad: squad(playerId, playerName)
+    });
+    const incomplete = {
+      standings: { results: [row(101, 'Alex', 40)] },
+      new_entries: { results: [] },
+      meta: {
+        fetchedAt: '2025-08-20T12:00:00.000Z',
+        incomplete: true,
+        degraded: true,
+        managerMetrics: { 101: metric(11, 'Saka', 40) }
+      }
+    };
+    const complete = {
+      standings: { results: [row(101, 'Alex', 40), row(202, 'Blair', 30)] },
+      new_entries: { results: [] },
+      meta: {
+        fetchedAt: '2025-08-20T12:00:01.000Z',
+        degraded: false,
+        managerMetrics: {
+          101: metric(11, 'Saka', 40),
+          202: metric(13, 'Haaland', 30)
+        }
+      }
+    };
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => incomplete })
+      .mockResolvedValueOnce({ ok: true, json: async () => complete });
+    const { app } = setupDom(fetchImpl);
+    await app.loadLiveStandings();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const ownership = document.querySelector('#live-ownership');
+    expect(ownership.hidden).toBe(false);
+    expect(ownership.textContent).toContain('Saka');
+    expect(ownership.textContent).toContain('Haaland');
+    expect(ownership.textContent).not.toContain('unavailable');
+  });
+
+  it('renders the first payload when the incomplete retry fails', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          standings: { results: [{ entry: 101, entry_name: 'Alpha', player_name: 'Alex', rank: 1, last_rank: 1, total: 40 }] },
+          new_entries: { results: [] },
+          meta: {
+            incomplete: true,
+            degraded: true,
+            managerMetrics: {
+              101: { picksKnown: true, gameweek: 40, season: 40, captain: { id: 11, name: 'Saka' }, squad: [] }
+            }
+          }
+        })
+      })
+      .mockRejectedValueOnce(new Error('offline'));
+    const { app } = setupDom(fetchImpl);
+    await app.loadLiveStandings();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(document.querySelector('#live-widget-content').textContent).toContain('Alex');
+    expect(document.querySelector('#live-widget-content').textContent).toContain('Saka');
   });
 
   it('renders the characterized unavailable state after API failure', async () => {

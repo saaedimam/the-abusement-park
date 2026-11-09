@@ -2,6 +2,9 @@ const LEAGUE_ID = '113546';
 const DEFAULT_FPL_ORIGIN = 'https://fantasy.premierleague.com';
 export const UPSTREAM_TIMEOUT_MS = 8000;
 export const MANAGER_CONCURRENCY = 4;
+// Fetch and the Cache API share one budget. The free plan allows 50 of either.
+export const SUBREQUEST_BUDGET = 50;
+const SUBREQUEST_TAIL = 2;
 
 const TTL = {
   aggregate: 120,
@@ -75,27 +78,48 @@ function isExpired(response) {
   return Number.isFinite(expiresAt) && expiresAt <= Date.now();
 }
 
-async function readAggregate(cache, request) {
+function budgetError() {
+  const error = new Error('Too many subrequests');
+  error.code = 'subrequest-budget';
+  return error;
+}
+
+function isBudgetError(error) {
+  return error?.code === 'subrequest-budget' || /too many subrequests/i.test(String(error?.message || ''));
+}
+
+function reserve(stats, { tail = false } = {}) {
+  const cap = tail ? stats.budget : stats.limit;
+  if (stats.subrequests >= cap) throw budgetError();
+  stats.subrequests += 1;
+}
+
+async function readAggregate(cache, request, stats) {
   try {
+    reserve(stats);
     const cached = await cache.match(request);
     if (!cached || isExpired(cached)) return null;
     return cached;
-  } catch {
+  } catch (error) {
+    if (isBudgetError(error)) throw error;
     return null;
   }
 }
 
-async function readCachedJson(cache, key) {
+async function readCachedJson(cache, key, stats) {
   try {
+    reserve(stats);
     const cached = await cache.match(cacheRequest(key));
     if (!cached || isExpired(cached)) return null;
     return await cached.json();
-  } catch {
+  } catch (error) {
+    if (isBudgetError(error)) throw error;
     return null;
   }
 }
 
-function writeCachedJson(cache, key, value, ttlSeconds) {
+function writeCachedJson(cache, key, value, ttlSeconds, stats, { tail = false } = {}) {
+  reserve(stats, { tail });
   const response = json(value, {
     headers: {
       'Cache-Control': `public, max-age=${ttlSeconds}`,
@@ -111,7 +135,16 @@ function resolveTimeoutMs(env) {
   return UPSTREAM_TIMEOUT_MS;
 }
 
+function resolveSubrequestBudget(env) {
+  const override = Number(env?.FPL_SUBREQUEST_BUDGET);
+  if (Number.isInteger(override) && override >= SUBREQUEST_TAIL + 1 && override <= SUBREQUEST_BUDGET) {
+    return override;
+  }
+  return SUBREQUEST_BUDGET;
+}
+
 async function fetchFplJson(url, stats) {
+  reserve(stats);
   stats.upstreamRequests += 1;
   let response;
   try {
@@ -303,19 +336,6 @@ function publicSquadPlayer(player) {
   };
 }
 
-function unavailableMetrics() {
-  return {
-    month: null,
-    gameweek: null,
-    season: null,
-    event: null,
-    seasons: null,
-    careerBestPct: null,
-    careerBestSeason: null,
-    careerAvgPct: null,
-  };
-}
-
 function normalizeLeague(league) {
   if (!league || typeof league !== 'object' || Array.isArray(league)) return null;
   return {
@@ -333,13 +353,16 @@ function normalizeStandingRow(row) {
   const entry = positiveInteger(row.entry);
   const rank = positiveInteger(row.rank);
   if (entry == null || rank == null) return null;
+  const eventTotal = nonNegativeInteger(row.event_total);
   const optionalInvalid = invalidPresent(row.id, positiveInteger(row.id) != null)
     || invalidPresent(row.last_rank, nonNegativeInteger(row.last_rank) != null)
     || invalidPresent(row.entry_name, typeof row.entry_name === 'string')
     || invalidPresent(row.player_name, typeof row.player_name === 'string')
-    || invalidPresent(row.total, Number.isFinite(row.total));
+    || invalidPresent(row.total, Number.isFinite(row.total))
+    || invalidPresent(row.event_total, eventTotal != null);
   return {
     optionalInvalid,
+    eventTotal,
     row: {
       id: positiveInteger(row.id),
       entry,
@@ -378,6 +401,7 @@ function normalizeStandingsPayload(data) {
   let dropped = 0;
   let optionalInvalid = false;
   const results = [];
+  const eventTotals = {};
   for (const row of data.standings.results) {
     const normalized = normalizeStandingRow(row);
     if (!normalized) {
@@ -386,6 +410,7 @@ function normalizeStandingsPayload(data) {
     }
     optionalInvalid = optionalInvalid || normalized.optionalInvalid;
     results.push(normalized.row);
+    eventTotals[String(normalized.row.entry)] = normalized.eventTotal;
   }
   if (data.standings.results.length > 0 && results.length === 0) {
     throw new StandingsError('FPL returned an unexpected response.', 'unexpected');
@@ -406,6 +431,7 @@ function normalizeStandingsPayload(data) {
     league: normalizeLeague(data.league),
     standings: { results },
     new_entries: { results: newResults },
+    eventTotals,
     dropped,
     optionalInvalid,
   };
@@ -475,11 +501,18 @@ function liveStatsFrom(live) {
 async function mapWithConcurrency(items, limit, worker) {
   const results = new Array(items.length);
   let nextIndex = 0;
+  let stop = false;
   const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (nextIndex < items.length) {
+    while (!stop && nextIndex < items.length) {
       const index = nextIndex;
       nextIndex += 1;
-      results[index] = await worker(items[index], index);
+      try {
+        results[index] = await worker(items[index], index);
+      } catch (error) {
+        if (!isBudgetError(error)) throw error;
+        stop = true;
+        results[index] = { skipped: true };
+      }
     }
   });
   await Promise.all(runners);
@@ -539,9 +572,18 @@ function namedPlayer(player) {
   return player ? { id: player.id, name: player.name } : null;
 }
 
+function officialPoints(entryHistory, eventId) {
+  if (!entryHistory || typeof entryHistory !== 'object') return null;
+  if (eventId != null && entryHistory.event != null && entryHistory.event !== eventId) return null;
+  return Number.isFinite(entryHistory.points) ? entryHistory.points : null;
+}
+
 function livePicksSummary({ squad, projectedGameweek, picks, latest, currentEvent, fixturesKnown }) {
-  const gameweek = projectedGameweek ?? latest?.points ?? null;
-  const eventForHit = projectedGameweek != null ? currentEvent : latest?.event;
+  const gameweek = projectedGameweek
+    ?? latest?.points
+    ?? officialPoints(picks?.entry_history, currentEvent)
+    ?? null;
+  const eventForHit = projectedGameweek != null ? currentEvent : (latest?.event ?? currentEvent);
   const hitCost = picks ? hitCostFrom(picks.entry_history, eventForHit) : null;
   return {
     gameweek,
@@ -550,13 +592,13 @@ function livePicksSummary({ squad, projectedGameweek, picks, latest, currentEven
     chip: typeof picks?.active_chip === 'string' && picks.active_chip.trim() ? picks.active_chip.trim() : null,
     captain: namedPlayer(squad.find(player => player.captain)),
     vice: namedPlayer(squad.find(player => player.viceCaptain)),
-    yetToPlay: fixturesKnown ? squad.filter(player => player.toPlay).length : null,
+    yetToPlay: picks && fixturesKnown ? squad.filter(player => player.toPlay).length : null,
     picksKnown: Boolean(picks),
   };
 }
 
 async function loadJsonResource(cache, stats, remember, key, ttl, load) {
-  const cached = await readCachedJson(cache, key);
+  const cached = await readCachedJson(cache, key, stats);
   if (cached) {
     stats.cacheHits += 1;
     return cached;
@@ -566,7 +608,88 @@ async function loadJsonResource(cache, stats, remember, key, ttl, load) {
   return value;
 }
 
-async function buildManagerMetrics(env, data, bootstrap, cache, stats, remember) {
+function bundleEntries(cached, accept) {
+  const source = cached?.entries;
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return {};
+  const entries = {};
+  for (const [id, value] of Object.entries(source)) {
+    if (accept(value)) entries[id] = value;
+  }
+  return entries;
+}
+
+async function fillBundle(cache, stats, key, ids, ttl, accept, loadOne, failurePrefix) {
+  let entries = {};
+  try {
+    entries = bundleEntries(await readCachedJson(cache, key, stats), accept);
+  } catch (error) {
+    if (!isBudgetError(error)) throw error;
+    return { entries, skipped: ids.map(id => String(id)) };
+  }
+
+  const missing = ids.filter(id => entries[String(id)] == null);
+  const room = Math.max(0, stats.limit - stats.subrequests - 1);
+  const batch = missing.slice(0, room);
+  const skipped = missing.slice(batch.length).map(id => String(id));
+  const loaded = await mapWithConcurrency(batch, MANAGER_CONCURRENCY, async (id) => {
+    try {
+      return { id: String(id), value: await loadOne(id) };
+    } catch (error) {
+      if (isBudgetError(error)) throw error;
+      stats.partialFailures.push(`${failurePrefix}-${id}`);
+      return { id: String(id), failed: true };
+    }
+  });
+
+  const seen = new Set();
+  let changed = false;
+  for (const item of loaded) {
+    if (!item || item.skipped) continue;
+    seen.add(item.id);
+    if (item.failed || !accept(item.value)) continue;
+    entries[item.id] = item.value;
+    changed = true;
+  }
+  for (const id of batch) {
+    if (!seen.has(String(id))) skipped.push(String(id));
+  }
+
+  if (changed) {
+    try {
+      await writeCachedJson(cache, key, { entries }, ttl, stats);
+    } catch (error) {
+      if (!isBudgetError(error)) throw error;
+    }
+  }
+  return { entries, skipped };
+}
+
+function normalizePicks(payload) {
+  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.picks)) {
+    const error = new Error('invalid picks');
+    error.code = 'invalid-picks';
+    throw error;
+  }
+  return {
+    picks: payload.picks,
+    entry_history: payload.entry_history ?? null,
+    active_chip: typeof payload.active_chip === 'string' && payload.active_chip.trim()
+      ? payload.active_chip.trim()
+      : null,
+  };
+}
+
+function applyEventTotal(summary, eventTotal) {
+  if (summary.gameweek != null || eventTotal == null) return summary;
+  const hitCost = summary.hitCost;
+  return {
+    ...summary,
+    gameweek: eventTotal,
+    gameweekGross: hitCost != null && Number.isFinite(eventTotal) ? eventTotal + hitCost : null,
+  };
+}
+
+async function buildManagerMetrics(env, data, bootstrap, cache, stats) {
   const entryIds = [...new Set([
     ...data.standings.results.map(team => team.entry),
     ...data.new_entries.results.map(team => team.entry),
@@ -586,98 +709,83 @@ async function buildManagerMetrics(env, data, bootstrap, cache, stats, remember)
   if (currentEvent) {
     try {
       const live = await loadJsonResource(
-        cache, stats, remember, `live-${currentEvent}`, TTL.live,
+        cache, stats, (key, value, ttl) => stats.remember(key, value, ttl), `live-${currentEvent}`, TTL.live,
         () => fetchFplJson(fplUrl(env, `/api/event/${currentEvent}/live/`), stats),
       );
       liveStats = liveStatsFrom(live);
-    } catch {
-      stats.partialFailures.push('live');
+    } catch (error) {
+      if (isBudgetError(error)) stats.partialFailures.push('live-budget');
+      else stats.partialFailures.push('live');
     }
 
     try {
       const fixtures = await loadJsonResource(
-        cache, stats, remember, `fixtures-${currentEvent}`, TTL.fixtures,
+        cache, stats, (key, value, ttl) => stats.remember(key, value, ttl), `fixtures-${currentEvent}`, TTL.fixtures,
         () => fetchFplJson(fplUrl(env, `/api/fixtures/?event=${currentEvent}`), stats),
       );
       finishedTeamIds = finishedTeams(fixtures);
       pendingTeamIds = pendingTeamIdsFrom(fixtures, finishedTeamIds);
       fixturesKnown = Array.isArray(fixtures);
-    } catch {
-      stats.partialFailures.push('fixtures');
+    } catch (error) {
+      if (isBudgetError(error)) stats.partialFailures.push('fixtures-budget');
+      else stats.partialFailures.push('fixtures');
     }
   }
 
-  const metrics = await mapWithConcurrency(entryIds, MANAGER_CONCURRENCY, async (entry) => {
-    const historyKey = `history-${entry}`;
-    let history = await readCachedJson(cache, historyKey);
-    if (history && Array.isArray(history.current) && Array.isArray(history.past)) {
-      stats.cacheHits += 1;
-    } else {
-      try {
-        history = normalizeHistory(await fetchFplJson(
-          fplUrl(env, `/api/entry/${entry}/history/`),
-          stats,
-        ));
-        if (!history) throw new Error('invalid history');
-        remember(historyKey, history, TTL.history);
-      } catch {
-        stats.partialFailures.push(`history-${entry}`);
-        return [String(entry), unavailableMetrics()];
-      }
-    }
-    if (history.degraded) stats.partialFailures.push(`history-${entry}`);
+  const isPicks = (value) => Array.isArray(value?.picks);
+  const isHistory = (value) => Array.isArray(value?.current) && Array.isArray(value?.past);
+  const picksBundle = currentEvent
+    ? await fillBundle(
+      cache, stats, `picks-bundle-${currentEvent}`, entryIds, TTL.picks, isPicks,
+      async (entry) => normalizePicks(await fetchFplJson(
+        fplUrl(env, `/api/entry/${entry}/event/${currentEvent}/picks/`),
+        stats,
+      )),
+      'picks',
+    )
+    : { entries: {}, skipped: [] };
+  const historyBundle = await fillBundle(
+    cache, stats, 'history-bundle', entryIds, TTL.history, isHistory,
+    async (entry) => {
+      const history = normalizeHistory(await fetchFplJson(
+        fplUrl(env, `/api/entry/${entry}/history/`),
+        stats,
+      ));
+      if (!history) throw new Error('invalid history');
+      return history;
+    },
+    'history',
+  );
 
-    const current = history.current;
-    const latest = current.at(-1);
+  const eventTotals = data.eventTotals || {};
+  const managerMetrics = {};
+  for (const entry of entryIds) {
+    const key = String(entry);
+    const history = historyBundle.entries[key] || null;
+    const picks = picksBundle.entries[key] || null;
+    if (history?.degraded) stats.partialFailures.push(`history-${entry}`);
+
     let squad = [];
     let projectedGameweek = null;
-    let picksKnown = false;
-    let picksPayload = null;
-    if (currentEvent) {
-      try {
-        const picks = await loadJsonResource(
-          cache, stats, remember, `picks-${entry}-${currentEvent}`, TTL.picks,
-          async () => {
-            const payload = await fetchFplJson(
-              fplUrl(env, `/api/entry/${entry}/event/${currentEvent}/picks/`),
-              stats,
-            );
-            if (!payload || typeof payload !== 'object' || !Array.isArray(payload.picks)) {
-              const error = new Error('invalid picks');
-              error.code = 'invalid-picks';
-              throw error;
-            }
-            return {
-              picks: payload.picks,
-              entry_history: payload.entry_history ?? null,
-              active_chip: typeof payload.active_chip === 'string' && payload.active_chip.trim()
-                ? payload.active_chip.trim()
-                : null,
-            };
-          },
-        );
-        ({ squad, projectedGameweek } = squadFromPicks(
-          picks, playersById, teamsById, liveStats, finishedTeamIds, pendingTeamIds,
-        ));
-        picksKnown = true;
-        picksPayload = picks;
-      } catch {
-        stats.partialFailures.push(`picks-${entry}`);
-      }
+    if (picks) {
+      ({ squad, projectedGameweek } = squadFromPicks(
+        picks, playersById, teamsById, liveStats, finishedTeamIds, pendingTeamIds,
+      ));
     }
-
+    const current = history?.current || [];
+    const latest = current.at(-1);
     const month = current.length
       ? current.filter(row => monthEventIds.has(row.event)).reduce((sum, row) => sum + row.points, 0)
       : null;
-    const summary = livePicksSummary({
+    const summary = applyEventTotal(livePicksSummary({
       squad,
       projectedGameweek,
-      picks: picksKnown ? picksPayload : null,
+      picks,
       latest,
       currentEvent,
       fixturesKnown,
-    });
-    return [String(entry), {
+    }), eventTotals[key] ?? null);
+    managerMetrics[key] = {
       month,
       gameweek: summary.gameweek,
       gameweekGross: summary.gameweekGross,
@@ -690,15 +798,18 @@ async function buildManagerMetrics(env, data, bootstrap, cache, stats, remember)
       season: latest?.total_points ?? null,
       event: latest?.event ?? null,
       squad,
-      ...careerProfile(history.past),
-    }];
-  });
+      ...careerProfile(history?.past),
+    };
+  }
 
-  return Object.fromEntries(metrics);
+  return {
+    managerMetrics,
+    incomplete: picksBundle.skipped.length > 0 || historyBundle.skipped.length > 0,
+  };
 }
 
 async function loadStandings(env, cache, stats, remember) {
-  const cached = await readCachedJson(cache, 'standings');
+  const cached = await readCachedJson(cache, 'standings', stats);
   if (cached?.standings?.results && cached?.new_entries?.results) {
     stats.cacheHits += 1;
     return cached;
@@ -725,8 +836,13 @@ async function loadStandings(env, cache, stats, remember) {
 async function buildPayload(context, cache, stats, writes) {
   const env = context.env;
   const remember = (key, value, ttl) => {
-    writes.push(writeCachedJson(cache, key, value, ttl));
+    try {
+      writes.push(writeCachedJson(cache, key, value, ttl, stats));
+    } catch (error) {
+      if (!isBudgetError(error)) throw error;
+    }
   };
+  stats.remember = remember;
   const standings = await loadStandings(env, cache, stats, remember);
   if (standings.dropped > 0) stats.partialFailures.push('standings-rows');
   if (standings.optionalInvalid) stats.partialFailures.push('standings-fields');
@@ -749,22 +865,24 @@ async function buildPayload(context, cache, stats, writes) {
   }
 
   const events = Array.isArray(bootstrap.events) ? bootstrap.events : [];
-  const managerMetrics = await buildManagerMetrics(env, standings, bootstrap, cache, stats, remember);
-  const degraded = stats.partialFailures.length > 0;
+  const { managerMetrics, incomplete } = await buildManagerMetrics(env, standings, bootstrap, cache, stats);
+  const degraded = stats.partialFailures.length > 0 || incomplete;
+  const meta = {
+    fetchedAt: new Date().toISOString(),
+    leagueId: LEAGUE_ID,
+    freshness: degraded ? 'degraded' : 'fresh',
+    stale: false,
+    degraded,
+    managerMetrics,
+    nextDeadline: nextDeadline(events),
+  };
+  if (incomplete) meta.incomplete = true;
 
   return {
     league: standings.league ?? null,
     standings: { results: standings.standings.results },
     new_entries: { results: standings.new_entries.results },
-    meta: {
-      fetchedAt: new Date().toISOString(),
-      leagueId: LEAGUE_ID,
-      freshness: degraded ? 'degraded' : 'fresh',
-      stale: false,
-      degraded,
-      managerMetrics,
-      nextDeadline: nextDeadline(events),
-    },
+    meta,
   };
 }
 
@@ -774,8 +892,16 @@ function ageSeconds(fetchedAt) {
   return Math.max(0, Math.round((Date.now() - then) / 1000));
 }
 
-async function serveStale(cache, reason) {
-  const saved = await readCachedJson(cache, 'last-known-good');
+async function serveStale(cache, reason, stats) {
+  let saved = null;
+  try {
+    reserve(stats, { tail: true });
+    const cached = await cache.match(cacheRequest('last-known-good'));
+    if (cached && !isExpired(cached)) saved = await cached.json();
+  } catch (error) {
+    if (!isBudgetError(error)) throw error;
+    return null;
+  }
   if (!saved?.payload?.standings?.results || !saved.payload.meta) return null;
   const fetchedAt = saved.fetchedAt || saved.payload.meta.fetchedAt || null;
   return json({
@@ -799,11 +925,15 @@ async function serveStale(cache, reason) {
 export async function onRequestGet(context) {
   const started = Date.now();
   const cache = caches.default;
+  const budget = resolveSubrequestBudget(context.env);
   const stats = {
     upstreamRequests: 0,
     cacheHits: 0,
     partialFailures: [],
     timeoutMs: resolveTimeoutMs(context.env),
+    subrequests: 0,
+    budget,
+    limit: budget - SUBREQUEST_TAIL,
   };
   const log = (event) => logEvent({
     durationMs: Date.now() - started,
@@ -815,7 +945,7 @@ export async function onRequestGet(context) {
 
   try {
     const aggregateKey = aggregateRequest(context.request.url);
-    const cached = await readAggregate(cache, aggregateKey);
+    const cached = await readAggregate(cache, aggregateKey, stats);
     if (cached) {
       const response = new Response(cached.body, cached);
       response.headers.set('X-FPL-Cache', 'HIT');
@@ -825,25 +955,42 @@ export async function onRequestGet(context) {
 
     const writes = [];
     const payload = await buildPayload(context, cache, stats, writes);
-    const response = json(payload, {
+    const incomplete = payload.meta.incomplete === true;
+    if (!incomplete) {
+      try {
+        const response = json(payload, {
+          headers: {
+            'Cache-Control': `public, max-age=${TTL.aggregate}`,
+            Expires: new Date(Date.now() + TTL.aggregate * 1000).toUTCString(),
+            'X-FPL-Cache': 'MISS',
+          },
+        });
+        reserve(stats, { tail: true });
+        writes.push(cache.put(aggregateKey, response.clone()));
+        writes.push(writeCachedJson(cache, 'last-known-good', {
+          payload,
+          fetchedAt: payload.meta.fetchedAt,
+        }, TTL.lastKnownGood, stats, { tail: true }));
+        context.waitUntil?.(Promise.all(writes));
+        log({ outcome: payload.meta.freshness });
+        return response;
+      } catch (error) {
+        if (!isBudgetError(error)) throw error;
+      }
+    }
+
+    context.waitUntil?.(Promise.all(writes));
+    log({ outcome: 'incomplete' });
+    return json(payload, {
       headers: {
-        'Cache-Control': `public, max-age=${TTL.aggregate}`,
-        Expires: new Date(Date.now() + TTL.aggregate * 1000).toUTCString(),
+        'Cache-Control': 'no-store',
         'X-FPL-Cache': 'MISS',
       },
     });
-    writes.push(cache.put(aggregateKey, response.clone()));
-    writes.push(writeCachedJson(cache, 'last-known-good', {
-      payload,
-      fetchedAt: payload.meta.fetchedAt,
-    }, TTL.lastKnownGood));
-    context.waitUntil?.(Promise.all(writes));
-    log({ outcome: payload.meta.freshness });
-    return response;
   } catch (error) {
     const reason = error?.code || 'unavailable';
     try {
-      const stale = await serveStale(cache, reason);
+      const stale = await serveStale(cache, reason, stats);
       if (stale) {
         log({ outcome: 'stale', staleReason: reason });
         return stale;

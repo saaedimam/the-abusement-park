@@ -47,7 +47,7 @@ export const FPL_PROFILE_BASE = 'https://fantasy.premierleague.com/entry';
 export const OLD_GUARDS = [
   { name: 'Arka Basak', displayName: 'Arka' },
   { name: 'Jawadur Rahman', displayName: 'Jawad' },
-  { name: 'MAC Alvi', displayName: 'Alvi' },
+  { name: 'Mac Alvi', displayName: 'Alvi' },
   { name: 'Irfan Ahmed', displayName: 'Irfan' },
 ];
 export const CURRENT_LEAGUE_PLAYERS = [
