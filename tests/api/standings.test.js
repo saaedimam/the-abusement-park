@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MANAGER_CONCURRENCY } from '../../functions/api/standings.js';
 import {
   bootstrapFixture,
   emptyStandingsFixture,
@@ -16,10 +17,11 @@ function clone(value) {
   return structuredClone(value);
 }
 
-function createContext(url = 'https://example.test/api/standings') {
+function createContext(url = 'https://example.test/api/standings', env) {
   const pending = [];
   return {
     request: new Request(url),
+    env,
     waitUntil(promise) { pending.push(promise); },
     pending
   };
@@ -29,6 +31,21 @@ function installCache(cachedResponse = null) {
   const cache = {
     match: vi.fn().mockResolvedValue(cachedResponse),
     put: vi.fn().mockResolvedValue(undefined)
+  };
+  globalThis.caches = { default: cache };
+  return cache;
+}
+
+function installMemoryCache() {
+  const store = new Map();
+  const cache = {
+    async match(request) {
+      const stored = store.get(request.url);
+      return stored ? stored.clone() : null;
+    },
+    async put(request, response) {
+      store.set(request.url, response.clone());
+    }
   };
   globalThis.caches = { default: cache };
   return cache;
@@ -93,6 +110,9 @@ describe('GET /api/standings contract', () => {
     expect(body.meta).toEqual({
       fetchedAt: '2025-08-20T12:00:00.000Z',
       leagueId: '113546',
+      freshness: 'fresh',
+      stale: false,
+      degraded: false,
       managerMetrics: {
         101: {
           month: 100,
@@ -130,7 +150,8 @@ describe('GET /api/standings contract', () => {
     });
     expect(context.pending).toHaveLength(1);
     await Promise.all(context.pending);
-    expect(caches.default.put).toHaveBeenCalledOnce();
+    expect(caches.default.put.mock.calls.length).toBeGreaterThan(1);
+    expect(globalThis.fetch.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
   });
 
   it('returns cached responses as HIT without upstream requests', async () => {
@@ -159,6 +180,9 @@ describe('GET /api/standings contract', () => {
     const { onRequestGet } = await loadModule();
     const body = await (await onRequestGet(createContext())).json();
     expect(body.meta.nextDeadline).toBeNull();
+    expect(body.meta.freshness).toBe('degraded');
+    expect(body.meta.degraded).toBe(true);
+    expect(body.meta.stale).toBe(false);
     expect(body.meta.managerMetrics['101'].month).toBe(0);
   });
 
@@ -179,25 +203,72 @@ describe('GET /api/standings contract', () => {
     });
   });
 
-  it('characterizes missing and invalid manager history fields', async () => {
+  it('drops invalid manager-history rows and nulls the optional fields that remain', async () => {
     installUpstream({ histories: {
       101: { current: null, past: null },
       202: { current: [{ event: 2, points: 0 }], past: [{ season_name: '', rank_percentage: 'invalid' }] }
     } });
     const { onRequestGet } = await loadModule();
     const body = await (await onRequestGet(createContext())).json();
+    expect(body.meta.freshness).toBe('degraded');
     expect(body.meta.managerMetrics['101']).toMatchObject({ month: null, gameweek: null, season: null, seasons: null });
-    expect(body.meta.managerMetrics['202']).toMatchObject({ month: 0, gameweek: 0, season: null, seasons: 1, careerBestPct: null });
+    expect(body.meta.managerMetrics['202']).toMatchObject({
+      month: 0,
+      gameweek: 0,
+      season: null,
+      seasons: null,
+      careerBestPct: null,
+      careerBestSeason: null,
+      careerAvgPct: null
+    });
   });
 
-  it('characterizes malformed manager records without changing the public response contract', async () => {
+  it('rejects a standings payload whose mandatory entry ids and ranks are all invalid', async () => {
     installUpstream({ standings: malformedManagerStandings });
     const { onRequestGet } = await loadModule();
     const response = await onRequestGet(createContext());
+    expect(response.status).toBe(502);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(await response.json()).toEqual({ error: 'FPL returned an unexpected response.' });
+  });
+
+  it('keeps valid standings rows, nulls invalid optional fields, and drops rows without an entry id or rank', async () => {
+    installUpstream({ standings: {
+      league: { id: 113546, name: 'Fixture League', private_note: 'drop me' },
+      secret: 'drop me',
+      standings: {
+        results: [
+          { ...standingsFixture.standings.results[0], token: 'drop me', entry_name: 12, total: '100' },
+          { entry: null, rank: 3, entry_name: 'Missing', player_name: 'Missing' }
+        ]
+      },
+      new_entries: { results: [{ entry: 'nope' }, { entry: 303, entry_name: 'Gamma', player_first_name: 1 }] }
+    } });
+    const { onRequestGet } = await loadModule();
+    const response = await onRequestGet(createContext());
     const body = await response.json();
+
     expect(response.status).toBe(200);
-    expect(body.standings.results[0].entry).toBeNull();
-    expect(body.meta.managerMetrics.null).toBeDefined();
+    expect(body.secret).toBeUndefined();
+    expect(body.league).toEqual({ id: 113546, name: 'Fixture League' });
+    expect(body.standings.results).toEqual([{
+      id: 1,
+      entry: 101,
+      entry_name: null,
+      player_name: 'Alex Test',
+      rank: 1,
+      last_rank: 2,
+      total: null
+    }]);
+    expect(body.new_entries.results).toEqual([{
+      entry: 303,
+      entry_name: 'Gamma',
+      player_first_name: null,
+      player_last_name: null
+    }]);
+    expect(body.meta.freshness).toBe('degraded');
+    expect(body.meta.managerMetrics.null).toBeUndefined();
+    expect(body.meta.managerMetrics['101'].season).toBe(100);
   });
 });
 
@@ -451,6 +522,207 @@ describe('upstream failure contract', () => {
     expect(response.status).toBe(502);
     expect(response.headers.get('Cache-Control')).toBe('no-store');
     expect(await response.json()).toEqual({ error: 'FPL returned an unexpected response.' });
+  });
+});
+
+describe('FPL request bounds, cache, and stale fallback', () => {
+  it('keeps manager history and picks at the concurrency ceiling', async () => {
+    vi.useRealTimers();
+    const standings = {
+      league: { id: 113546, name: 'Fixture League' },
+      standings: {
+        results: Array.from({ length: 6 }, (_, index) => ({
+          id: index + 1,
+          entry: index + 1,
+          entry_name: `Team ${index + 1}`,
+          player_name: `Player ${index + 1}`,
+          rank: index + 1,
+          last_rank: index + 1,
+          total: 10
+        }))
+      },
+      new_entries: { results: [] }
+    };
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/entry/')) {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await gate;
+        inFlight -= 1;
+        if (url.includes('/history/')) return jsonResponse({ current: [], past: [] });
+        return jsonResponse({ picks: [] });
+      }
+      if (url.includes('/leagues-classic/')) return jsonResponse(standings);
+      if (url.includes('/bootstrap-static/')) return jsonResponse(bootstrapFixture);
+      if (url.includes('/live/')) return jsonResponse({ elements: [] });
+      if (url.includes('/fixtures/')) return jsonResponse([]);
+      throw new Error(`Unexpected upstream URL ${url}`);
+    });
+
+    const { onRequestGet } = await loadModule();
+    const pending = onRequestGet(createContext());
+    const deadline = Date.now() + 2000;
+    while (maxInFlight < MANAGER_CONCURRENCY && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(maxInFlight).toBe(MANAGER_CONCURRENCY);
+    expect(inFlight).toBe(MANAGER_CONCURRENCY);
+    release();
+    const response = await pending;
+    expect(response.status).toBe(200);
+    expect(maxInFlight).toBe(MANAGER_CONCURRENCY);
+  });
+
+  it('aborts a stalled standings request at the upstream timeout', async () => {
+    vi.useRealTimers();
+    globalThis.fetch = vi.fn((_input, init) => new Promise((_resolve, reject) => {
+      const abort = () => reject(init.signal.reason);
+      if (init.signal.aborted) abort();
+      else init.signal.addEventListener('abort', abort, { once: true });
+    }));
+    const { onRequestGet } = await loadModule();
+    const response = await onRequestGet(createContext('https://example.test/api/standings', {
+      FPL_UPSTREAM_TIMEOUT_MS: 50
+    }));
+    expect(response.status).toBe(502);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(await response.json()).toEqual({ error: 'FPL standings are temporarily unavailable.' });
+    expect(globalThis.fetch.mock.calls[0][1].signal.aborted).toBe(true);
+  });
+
+  it('degrades one timed-out manager history without failing the standings', async () => {
+    vi.useRealTimers();
+    globalThis.fetch = vi.fn((input, init) => {
+      const url = String(input);
+      if (url.includes('/entry/202/history')) {
+        return new Promise((_resolve, reject) => {
+          const abort = () => reject(init.signal.reason);
+          if (init.signal.aborted) abort();
+          else init.signal.addEventListener('abort', abort, { once: true });
+        });
+      }
+      if (url.includes('/leagues-classic/')) return jsonResponse(clone(standingsFixture));
+      if (url.includes('/bootstrap-static/')) return jsonResponse(clone(bootstrapFixture));
+      if (url.includes('/live/')) return jsonResponse(clone(liveFixture));
+      if (url.includes('/fixtures/')) return jsonResponse([]);
+      if (url.includes('/picks')) return jsonResponse({ picks: [] });
+      if (url.includes('/history')) return jsonResponse(clone(managerHistories[101]));
+      throw new Error(`Unexpected upstream URL ${url}`);
+    });
+    const { onRequestGet } = await loadModule();
+    const response = await onRequestGet(createContext('https://example.test/api/standings', {
+      FPL_UPSTREAM_TIMEOUT_MS: 50
+    }));
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(body.meta.freshness).toBe('degraded');
+    expect(body.meta.managerMetrics['101'].season).toBe(100);
+    expect(body.meta.managerMetrics['202'].season).toBeNull();
+  });
+
+  it('serves last-known-good standings with explicit stale metadata when upstream fails', async () => {
+    const cache = installMemoryCache();
+    const put = vi.spyOn(cache, 'put');
+    const { onRequestGet } = await loadModule();
+    const firstContext = createContext();
+    const first = await onRequestGet(firstContext);
+    expect((await first.json()).meta.freshness).toBe('fresh');
+    await Promise.all(firstContext.pending);
+    put.mockClear();
+
+    vi.advanceTimersByTime(121_000);
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error('offline'));
+    const response = await onRequestGet(createContext());
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('X-FPL-Cache')).toBe('STALE');
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(body.standings.results.map((row) => row.entry)).toEqual([101, 202]);
+    expect(body.meta).toMatchObject({
+      freshness: 'stale',
+      stale: true,
+      fetchedAt: '2025-08-20T12:00:00.000Z',
+      ageSeconds: 121,
+      staleReason: 'unavailable'
+    });
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it('does not serve an expired last-known-good record', async () => {
+    installMemoryCache();
+    const { onRequestGet } = await loadModule();
+    const firstContext = createContext();
+    await onRequestGet(firstContext);
+    await Promise.all(firstContext.pending);
+
+    vi.advanceTimersByTime((24 * 60 * 60 * 1000) + 1000);
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error('offline'));
+    const response = await onRequestGet(createContext());
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ error: 'FPL standings are temporarily unavailable.' });
+  });
+
+  it('refetches expired standings while reusing the longer-lived bootstrap and history caches', async () => {
+    installMemoryCache();
+    const { onRequestGet } = await loadModule();
+    const firstContext = createContext();
+    await onRequestGet(firstContext);
+    await Promise.all(firstContext.pending);
+
+    vi.advanceTimersByTime(121_000);
+    globalThis.fetch.mockClear();
+    const body = await (await onRequestGet(createContext())).json();
+    const urls = globalThis.fetch.mock.calls.map((call) => String(call[0]));
+
+    expect(body.meta.freshness).toBe('fresh');
+    expect(urls.some((url) => url.includes('/leagues-classic/'))).toBe(true);
+    expect(urls.some((url) => url.includes('/bootstrap-static/'))).toBe(false);
+    expect(urls.some((url) => url.includes('/history/'))).toBe(false);
+    expect(urls.some((url) => url.includes('/picks'))).toBe(true);
+  });
+
+  it('uses a configured http(s) origin and ignores an invalid one', async () => {
+    const { onRequestGet } = await loadModule();
+    await onRequestGet(createContext('https://example.test/api/standings', { FPL_API_ORIGIN: 'http://127.0.0.1:8799/ignored' }));
+    expect(String(globalThis.fetch.mock.calls[0][0])).toBe('http://127.0.0.1:8799/api/leagues-classic/113546/standings/');
+
+    globalThis.fetch.mockClear();
+    await onRequestGet(createContext('https://example.test/api/standings', { FPL_API_ORIGIN: 'javascript:alert(1)' }));
+    expect(String(globalThis.fetch.mock.calls[0][0])).toContain('https://fantasy.premierleague.com/');
+  });
+
+  it('rejects a substitute that would exceed the midfield maximum', async () => {
+    const positions = [1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 4, 1, 3, 2, 4];
+    const elements = positions.map((position, index) => ({
+      id: index + 1, web_name: `Player ${index + 1}`, element_type: position, team: 1
+    }));
+    const picks = elements.map((player, index) => ({
+      element: player.id, position: index + 1, multiplier: index < 11 ? 1 : 0,
+      is_captain: false, is_vice_captain: false
+    }));
+    const live = { elements: elements.map((player) => ({
+      id: player.id,
+      stats: { total_points: player.id === 13 ? 9 : player.id === 14 ? 4 : 2, minutes: player.id === 2 ? 0 : 90 }
+    })) };
+    installUpstream({
+      bootstrap: { ...bootstrapFixture, elements, teams: [{ id: 1, short_name: 'TST' }] },
+      picks: { 101: { picks }, 202: { picks: [] } },
+      live,
+      fixtures: [{ team_h: 1, team_a: 2, finished: true }]
+    });
+
+    const { onRequestGet } = await loadModule();
+    const body = await (await onRequestGet(createContext())).json();
+    const squad = body.meta.managerMetrics[101].squad;
+
+    expect(squad.find((player) => player.id === 13)).not.toHaveProperty('projectedIn');
+    expect(squad.find((player) => player.id === 14)).toMatchObject({ projectedIn: true, replaces: 2 });
   });
 });
 

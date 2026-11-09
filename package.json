@@ -13,6 +13,8 @@
     "test:e2e": "playwright test --grep-invert 'deployed preview smoke'",
     "test:smoke": "playwright test tests/e2e/deployed-smoke.spec.js --project=desktop",
     "test:e2e:install": "playwright install chromium",
+    "dev": "wrangler pages dev public",
+    "deploy": "wrangler pages deploy",
     "validate:syntax": "node scripts/validate-syntax.mjs",
     "validate:static": "node scripts/validate-static.mjs",
     "build": "npm run validate:static",

@@ -23,7 +23,7 @@ The Phase 0 findings matched the inspected implementation. One qualification rem
 - Vitest runs unit, API contract, and jsdom interaction tests.
 - The historical test helper evaluates the existing inline application functions without moving or rewriting production algorithms.
 - API tests import the Pages Function directly and replace `fetch` and `caches.default` with deterministic test doubles.
-- Playwright starts the full application with `wrangler pages dev .` and intercepts `/api/standings` in-browser.
+- Playwright starts the full application with `wrangler pages dev public` and a local FPL stub, and intercepts `/api/standings` in the browser for visual tests. The request-fixture GET contract hits the Pages Function with that stub.
 - axe-core runs inside every required browser viewport.
 - ESLint, Markdownlint, inline JavaScript syntax validation, and static asset/structure validation provide pre-test quality gates.
 
@@ -69,15 +69,16 @@ Every axe result is attached to the corresponding Playwright test result. Automa
 - The application script and historical data remain monolithic and inline.
 - Historical name identity remains string-based.
 - Some manager metrics remain manually maintained in the frontend.
-- The current Function has no upstream timeout, concurrency limit, or stale-on-error strategy. Those changes are reserved for PR 3.
+- `/api/standings` bounds manager fan-out, times out upstream calls, caches standings, bootstrap, histories, picks, live data, and fixtures separately, and serves last-known-good responses with `freshness: "stale"`.
 - Month display derives from the current calendar date; tests avoid volatile assertions around that label.
 - The legacy GitHub Pages workflow is manual-only because it cannot execute the Cloudflare Pages Function.
-- `main` branch protection must require all CI checks; this repository setting is verified separately from source-controlled workflow configuration.
+- `main` branch protection must require `Lint, test, and coverage`, `Browser regression (1/2)`, and `Browser regression (2/2)`. That setting is not stored in the repo.
+- Deployed preview smoke runs only when `SMOKE_BASE_URL` is set to the immutable Cloudflare deployment URL. The git SHA is not that hostname, and discovering the deployment id requires Cloudflare API credentials this workflow does not have.
 - Manual screen-reader, zoom/reflow, and complete keyboard audits remain necessary.
 
 ## Remaining testing gaps
 
-- No visual-regression image baseline.
+- Linux visual baselines were regenerated after the live-league layout change. The Darwin snapshots in the same folder were not regenerated here and can fail on macOS until they are updated with `npm run test:e2e -- --update-snapshots`.
 - No live-production FPL probe in CI by design.
 - No performance budget or synthetic monitoring.
 - No browser matrix beyond Chromium in this foundation PR.

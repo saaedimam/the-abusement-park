@@ -1,6 +1,8 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "the-abusement-park",
+  // `wrangler pages deploy` with no directory argument uploads this directory only.
+  // Pages Functions are bundled from ./functions in the working directory, not from inside public/.
   "pages_build_output_dir": "public",
   "compatibility_date": "2026-06-30"
 }

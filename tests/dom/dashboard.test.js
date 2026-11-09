@@ -27,6 +27,12 @@ describe('historical dashboard DOM behavior', () => {
     expect(document.querySelectorAll('#stats-bar .stat')).toHaveLength(6);
     expect(document.querySelectorAll('#history .history-card')).toHaveLength(18);
     expect(document.querySelector('#stats-bar').textContent).toContain('18');
+    const anjishu = [...document.querySelectorAll('#history .history-card')]
+      .find((card) => card.getAttribute('aria-label').includes('Anjishu Bhattacharjee'));
+    expect(anjishu).toBeTruthy();
+    expect(anjishu.querySelector('.history-winner').textContent).toBe('Anjishu');
+    expect(document.querySelector('.history-card').getAttribute('aria-label'))
+      .toContain('Abrar Siddique');
   });
 
   it('keeps selected season-filter state synchronized with the panel', () => {
@@ -39,7 +45,7 @@ describe('historical dashboard DOM behavior', () => {
     expect(document.querySelector('#standings-panel').getAttribute('aria-labelledby')).toBe('tab-last5');
   });
 
-  it('renders and exposes the existing missing-screenshot state', () => {
+  it('shows the known-missing screenshot fallback without requesting the file', () => {
     const { app } = setupDom();
     app.updateView('all', document.querySelector('#tab-all'));
     app.buildHistory();
@@ -47,12 +53,24 @@ describe('historical dashboard DOM behavior', () => {
 
     app.openLightboxAt(0);
     const image = document.querySelector('#lightbox-img');
-    image.onerror();
 
     expect(card.getAttribute('role')).toBe('button');
+    expect(image.hasAttribute('src')).toBe(false);
+    expect(image.hidden).toBe(true);
     expect(document.querySelector('#lightbox-error').hidden).toBe(false);
     expect(document.querySelector('#lightbox-error').textContent)
       .toContain('Screenshot not available');
+  });
+
+  it('uses the image error handler when an unlisted screenshot fails to load', () => {
+    const { app } = setupDom();
+    app.seasons[1].img = 'images/not-in-the-archive.png';
+    app.openLightboxAt(1);
+    const image = document.querySelector('#lightbox-img');
+    expect(image.getAttribute('src')).toBe('images/not-in-the-archive.png');
+    image.onerror();
+    expect(image.hidden).toBe(true);
+    expect(document.querySelector('#lightbox-error').hidden).toBe(false);
   });
 });
 
@@ -135,6 +153,27 @@ describe('live standings DOM behavior', () => {
     expect(container.querySelector('.live-player-sub-in').closest('.live-squad-pitch')).not.toBeNull();
     expect(container.querySelector('.live-projected-note').textContent).toContain('Projected');
     expect(container.querySelector('[aria-label="Projected substitute in"] svg')).not.toBeNull();
+  });
+
+  it('labels stale standings instead of presenting them as live', async () => {
+    const { app } = setupDom(vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        standings: { results: [] },
+        new_entries: { results: [] },
+        meta: {
+          fetchedAt: '2025-08-20T12:00:00.000Z',
+          freshness: 'stale',
+          stale: true,
+          ageSeconds: 600
+        }
+      })
+    }));
+    await app.loadLiveStandings();
+    expect(document.querySelector('#live-widget-section .section-label').textContent)
+      .toBe('Last known standings (not live)');
+    expect(document.querySelector('#live-widget-content').textContent)
+      .toContain('These are not live results.');
   });
 
   it('renders the characterized unavailable state after API failure', async () => {

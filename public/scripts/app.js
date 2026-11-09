@@ -1,6 +1,8 @@
-import { LEAGUE_ID, OLD_GUARDS, seasons } from './data.js';
+import { LEAGUE_ID, MISSING_ARCHIVE_IMAGES, OLD_GUARDS, seasons } from './data.js';
 import { buildStats, escapeHtml, renderManagerName, trailingStreak } from './domain.js';
 import { loadLiveStandings } from './live.js';
+
+const missingArchiveImages = new Set(MISSING_ARCHIVE_IMAGES);
 
 let lightboxIndex = 0;
 let lightboxReturnFocus = null;
@@ -114,11 +116,19 @@ function showLightboxImage() {
   caption.textContent = `${s.year} · Won by ${s.winner}`;
   title.textContent = `Final league table – ${s.year}`;
   img.alt = `Final league table – ${s.year}`;
-  img.hidden = false;
-  err.hidden = true;
   img.onload = () => { img.hidden = false; err.hidden = true; };
   img.onerror = () => { img.hidden = true; err.hidden = false; };
-  img.src = '';
+  if (missingArchiveImages.has(s.img)) {
+    img.onload = null;
+    img.onerror = null;
+    img.hidden = true;
+    img.removeAttribute('src');
+    err.hidden = false;
+    updateLightboxNav();
+    return;
+  }
+  err.hidden = true;
+  img.hidden = true;
   img.src = s.img;
   updateLightboxNav();
 }
@@ -209,7 +219,7 @@ function buildHistory() {
     card.setAttribute('tabindex', '0');
     card.setAttribute(
       'aria-label',
-      `View season details · ${s.year} · ${s.winner.split(' ')[0]}${isCurrent ? ' · Latest' : ''}`
+      `View season details · ${s.year} · ${s.winner}${isCurrent ? ' · Latest' : ''}`
     );
     card.innerHTML = `
       <div class="trophy-icon" aria-hidden="true">🏆</div>
@@ -238,6 +248,12 @@ function setupBraggingRights() {
   btn.addEventListener('click', () => {
     const target = document.getElementById('brag-container');
     const originalBg = target.style.background;
+
+    if (typeof html2canvas !== 'function') {
+      btn.textContent = '❌ Failed';
+      setTimeout(() => { btn.textContent = '📸 Share Podium to WhatsApp'; }, 2000);
+      return;
+    }
 
     target.style.background = '#0a0c10';
     btn.textContent = '📸 Generating...';

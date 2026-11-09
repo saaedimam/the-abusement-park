@@ -7,6 +7,7 @@ export default defineConfig([
       ecmaVersion: 2024,
       sourceType: 'module',
       globals: {
+        AbortSignal: 'readonly',
         Buffer: 'readonly',
         URL: 'readonly',
         Request: 'readonly',
