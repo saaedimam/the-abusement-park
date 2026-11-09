@@ -12,10 +12,11 @@ function loadModuleSource(relativePath) {
 
 const dataSource = loadModuleSource('data.js');
 const domainSource = loadModuleSource('domain.js');
+const leagueSource = loadModuleSource('league.js');
 const liveSource = loadModuleSource('live.js');
 const applicationScript = loadModuleSource('app.js');
 const cut = applicationScript.indexOf('function init()');
-const source = `${dataSource}\n${domainSource}\n${liveSource}\n${applicationScript.slice(0, cut)}`.replace(
+const source = `${dataSource}\n${domainSource}\n${leagueSource}\n${liveSource}\n${applicationScript.slice(0, cut)}`.replace(
   /document\.addEventListener\('error',[\s\S]*?\n\}\);/,
   ''
 );

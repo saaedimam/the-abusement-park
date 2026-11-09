@@ -176,6 +176,107 @@ describe('live standings DOM behavior', () => {
       .toContain('These are not live results.');
   });
 
+  it('shows movement, chip, captain, players still to play, and the hit in the gameweek score', () => {
+    const { app } = setupDom();
+    const container = document.createElement('div');
+    app.renderLiveStandings(container, [{
+      entry: 100,
+      playerName: 'Alex Test',
+      teamName: 'Alpha FC',
+      rank: 1,
+      lastRank: 4,
+      month: 20,
+      gameweek: 73,
+      gameweekGross: 77,
+      hitCost: 4,
+      chip: 'wildcard',
+      captain: { id: 2, name: 'Saka' },
+      vice: { id: 1, name: 'Raya' },
+      yetToPlay: 2,
+      picksKnown: true,
+      season: 100,
+      squad: []
+    }]);
+
+    const row = container.querySelector('.live-row');
+    expect(row.querySelector('.trend-up').getAttribute('aria-label')).toBe('Rank improved by 3 places');
+    expect(row.querySelector('.live-move').textContent).toBe('3');
+    expect(row.querySelector('.live-chip').textContent).toBe('WC');
+    expect(row.querySelector('.live-chip').getAttribute('aria-label')).toBe('Wildcard');
+    expect(row.textContent).toContain('C Saka');
+    expect(row.textContent).toContain('V Raya');
+    expect(row.textContent).toContain('2 to play');
+    expect(row.textContent).toContain('77 (−4) = 73');
+  });
+
+  it('renders league ownership and a two-manager archive rivalry', async () => {
+    const payload = {
+      standings: {
+        results: [
+          { entry: 570338, entry_name: 'Stars', player_name: 'MAC Alvi', rank: 2, last_rank: 2, total: 80 },
+          { entry: 523129, entry_name: 'Theatre', player_name: 'Irfan Ahmed', rank: 4, last_rank: 1, total: 70 }
+        ]
+      },
+      new_entries: { results: [] },
+      meta: {
+        fetchedAt: '2025-08-20T12:00:00.000Z',
+        managerMetrics: {
+          570338: {
+            picksKnown: true,
+            month: 10,
+            gameweek: 40,
+            season: 80,
+            chip: 'bboost',
+            captain: { id: 11, name: 'Saka' },
+            vice: { id: 12, name: 'Raya' },
+            yetToPlay: 1,
+            squad: [
+              { id: 11, name: 'Saka', multiplier: 2, slot: 3, points: 10, captain: true, viceCaptain: false },
+              { id: 12, name: 'Raya', multiplier: 1, slot: 1, points: 6, captain: false, viceCaptain: true }
+            ]
+          },
+          523129: {
+            picksKnown: true,
+            month: 8,
+            gameweek: 30,
+            season: 70,
+            captain: { id: 13, name: 'Haaland' },
+            vice: null,
+            yetToPlay: 0,
+            squad: [
+              { id: 12, name: 'Raya', multiplier: 0, slot: 12, points: 2, captain: false, viceCaptain: false },
+              { id: 13, name: 'Haaland', multiplier: 2, slot: 9, points: 12, captain: true, viceCaptain: false }
+            ]
+          }
+        }
+      }
+    };
+    const { app } = setupDom(vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => payload
+    }));
+    await app.loadLiveStandings();
+
+    const ownership = document.querySelector('#live-ownership');
+    expect(ownership.hidden).toBe(false);
+    expect(ownership.textContent).toContain('League picks');
+    expect(ownership.textContent).toContain('Saka');
+    expect(ownership.textContent).toContain('Owned by one manager');
+    expect(ownership.textContent).toContain('Haaland');
+
+    const compare = document.querySelector('#live-compare');
+    expect(compare.textContent).toContain('Shared');
+    expect(compare.textContent).toContain('Raya');
+    expect(compare.textContent).toContain('Archive rivalry');
+    expect(compare.textContent).toContain('Mac Alvi');
+    expect(compare.textContent).toContain('2022/23');
+    expect(compare.textContent).toContain('not gameweek head-to-head');
+
+    compare.querySelector('#compare-b').value = '570338';
+    compare.querySelector('#compare-b').dispatchEvent(new window.Event('change'));
+    expect(compare.textContent).toContain('Choose two different managers.');
+  });
+
   it('renders the characterized unavailable state after API failure', async () => {
     const { app } = setupDom(vi.fn().mockRejectedValue(new Error('offline')));
     await app.loadLiveStandings();

@@ -1,5 +1,6 @@
 import { LEAGUE_ID } from './data.js';
 import { currentPlayerByEntry, escapeHtml, fplProfileUrl } from './domain.js';
+import { chipBadge, formatHitScore, leagueOwnership, rankMovement, rivalryRecord } from './league.js';
 
 // --- FEATURE: Live FPL Standings ---
 export function liveScore(value) {
@@ -26,14 +27,45 @@ export function renderNextDeadline(nextDeadline) {
   deadlineEl.hidden = false;
 }
 
+function movementMarkup(team) {
+  const movement = rankMovement(team.rank, team.lastRank);
+  if (!movement || movement.direction === 'flat') {
+    return '<span class="live-trend trend-flat" role="img" aria-label="Rank unchanged"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8"/></svg></span>';
+  }
+  const up = movement.direction === 'up';
+  const placeWord = movement.places === 1 ? 'place' : 'places';
+  const label = up
+    ? `Rank improved by ${movement.places} ${placeWord}`
+    : `Rank declined by ${movement.places} ${placeWord}`;
+  return `<span class="live-trend ${up ? 'trend-up' : 'trend-down'}" role="img" aria-label="${label}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="${up ? 'm4 10 4-4 4 4' : 'm4 6 4 4 4-4'}"/></svg><span class="live-move">${movement.places}</span></span>`;
+}
+
+function gameweekMarkup(team) {
+  const equation = formatHitScore(team.gameweekGross, team.hitCost, team.gameweek);
+  if (!equation) return `<span class="live-score"><small>GW</small>${liveScore(team.gameweek)}</span>`;
+  return `<span class="live-score"><small>GW</small><span class="live-gw-net">${escapeHtml(team.gameweek)}</span><span class="live-gw-hit">${escapeHtml(equation)}</span></span>`;
+}
+
+function flagsMarkup(team) {
+  const chip = chipBadge(team.chip);
+  const chipHtml = chip
+    ? `<span class="live-chip" title="${escapeHtml(chip.label)}" aria-label="${escapeHtml(chip.label)}">${escapeHtml(chip.code)}</span>`
+    : '';
+  const captain = team.captain?.name
+    ? `<span class="live-role" aria-label="Captain ${escapeHtml(team.captain.name)}">C ${escapeHtml(team.captain.name)}</span>`
+    : '';
+  const vice = team.vice?.name
+    ? `<span class="live-role" aria-label="Vice-captain ${escapeHtml(team.vice.name)}">V ${escapeHtml(team.vice.name)}</span>`
+    : '';
+  const toPlay = Number.isInteger(team.yetToPlay)
+    ? `<span class="live-meta" aria-label="${team.yetToPlay} ${team.yetToPlay === 1 ? 'player' : 'players'} yet to play">${team.yetToPlay} to play</span>`
+    : '';
+  if (!chipHtml && !captain && !vice && !toPlay) return '';
+  return `<div class="live-flags">${chipHtml}${captain}${vice}${toPlay}</div>`;
+}
+
 export function renderLiveRow(team, squadExpanded = false) {
-  // Lower rank number = better position. A missing previous rank is not a decline.
-  const hasLastRank = Number.isInteger(team.lastRank) && team.lastRank > 0;
-  const trend = hasLastRank && team.rank < team.lastRank
-    ? '<span class="live-trend trend-up" role="img" aria-label="Rank improved"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 10 4-4 4 4"/></svg></span>'
-    : hasLastRank && team.rank > team.lastRank
-      ? '<span class="live-trend trend-down" role="img" aria-label="Rank declined"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></span>'
-      : '<span class="live-trend trend-flat" role="img" aria-label="Rank unchanged"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8"/></svg></span>';
+  const trend = movementMarkup(team);
 
   const hasSquad = Array.isArray(team.squad) && team.squad.length > 0;
   const hasProjectedSubs = hasSquad && team.squad.some(player => player.projectedIn || player.projectedOut);
@@ -53,15 +85,16 @@ export function renderLiveRow(team, squadExpanded = false) {
             <div class="live-manager"><a class="live-profile-link" href="${fplProfileUrl(team.entry)}" target="_blank" rel="noopener noreferrer">${escapeHtml(team.playerName)}</a></div>
             <span class="live-team">${escapeHtml(team.teamName)}</span>
           </div>
+          ${flagsMarkup(team)}
           <div class="live-team-line">
             ${team.seasons ? `<span class="live-meta" title="Seasons played" aria-label="${team.seasons} seasons">S ${team.seasons}</span>` : ''}
             ${team.careerBestPct ? `<span class="live-meta" title="Career Best Finish · ${escapeHtml(team.careerBestSeason)}" aria-label="Career Best Finish ${escapeHtml(team.careerBestPct)}, ${escapeHtml(team.careerBestSeason)}">CBF ${escapeHtml(team.careerBestPct)}</span>` : ''}
             ${team.careerAvgPct ? `<span class="live-meta live-meta-caf" title="Career Average Finish" aria-label="Career Average Finish ${escapeHtml(team.careerAvgPct)}">CAF ${escapeHtml(team.careerAvgPct)}</span>` : ''}
           </div>
         </div>
-        <div class="live-performance" aria-label="Month ${liveScore(team.month)}, gameweek ${liveScore(team.gameweek)}, season ${liveScore(team.season)}">
+        <div class="live-performance" aria-label="Month ${liveScore(team.month)}, gameweek ${formatHitScore(team.gameweekGross, team.hitCost, team.gameweek) || liveScore(team.gameweek)}, season ${liveScore(team.season)}">
           <span class="live-score"><small>Month</small>${liveScore(team.month)}</span>
-          <span class="live-score"><small>GW</small>${liveScore(team.gameweek)}</span>
+          ${gameweekMarkup(team)}
           <span class="live-score"><small>Total</small>${liveScore(team.season)}</span>
         </div>
         <div class="live-actions">
@@ -149,10 +182,145 @@ export function renderLiveStandings(container, rows, expanded = false, expandedS
   });
 }
 
+function ownerPhrase(owner) {
+  return `${escapeHtml(owner.managerName)}${owner.benched ? ' (bench)' : ''}`;
+}
+
+function renderOwnership(managers) {
+  const ownership = leagueOwnership(managers);
+  if (!ownership.managersCounted) {
+    return `<section class="live-panel" aria-labelledby="live-ownership-title">
+      <h3 id="live-ownership-title" class="live-panel-title">League picks</h3>
+      <p class="empty-note">Squads are not available for this gameweek.</p>
+    </section>`;
+  }
+  const captains = ownership.captaincy.map(player => `
+    <li><span class="live-pick-name">${escapeHtml(player.name)}</span>
+      <span>${player.captains.map(owner => escapeHtml(owner.managerName)).join(', ')}</span></li>`).join('');
+  const differentials = ownership.differentials.map(player => `
+    <li><span class="live-pick-name">${escapeHtml(player.name)}</span>
+      <span>${ownerPhrase(player.owners[0])}</span></li>`).join('');
+  const everyone = ownership.players.map(player => `
+    <li><span class="live-pick-name">${escapeHtml(player.name)}</span>
+      <span>${player.owners.length} own, ${player.benched} bench${player.captains.length ? `, C ${player.captains.map(owner => escapeHtml(owner.managerName)).join(', ')}` : ''}</span></li>`).join('');
+  return `<section class="live-panel" aria-labelledby="live-ownership-title">
+    <h3 id="live-ownership-title" class="live-panel-title">League picks</h3>
+    <p class="live-panel-note">This mini-league only. ${ownership.managersCounted} squad${ownership.managersCounted === 1 ? '' : 's'} loaded${ownership.squadsUnavailable ? `, ${ownership.squadsUnavailable} unavailable` : ''}.</p>
+    <h4 class="live-panel-label">Captains</h4>
+    ${captains ? `<ul class="live-pick-list">${captains}</ul>` : '<p class="empty-note">No captain is marked.</p>'}
+    <h4 class="live-panel-label">Owned by one manager</h4>
+    ${differentials ? `<ul class="live-pick-list">${differentials}</ul>` : '<p class="empty-note">No single-manager picks.</p>'}
+    <details class="live-pick-details">
+      <summary>Every pick in the league</summary>
+      <ul class="live-pick-list">${everyone}</ul>
+    </details>
+  </section>`;
+}
+
+function squadList(manager) {
+  const squad = manager.squad || [];
+  const starting = squad.filter(player => !((player.multiplier === 0 || player.slot > 11) && !player.projectedIn) && !player.projectedOut);
+  const bench = squad.filter(player => !starting.includes(player));
+  const item = player => `<li>${escapeHtml(player.name)} <span>${player.captain ? 'C ' : ''}${player.viceCaptain ? 'V ' : ''}${liveScore(player.points)}</span></li>`;
+  return `<div class="live-compare-side">
+    <h4 class="live-panel-label">${escapeHtml(manager.playerName)}</h4>
+    ${squad.length ? `<p class="live-compare-kicker">Playing</p><ul class="live-pick-list">${starting.map(item).join('')}</ul>
+      ${bench.length ? `<p class="live-compare-kicker">Bench</p><ul class="live-pick-list">${bench.map(item).join('')}</ul>` : ''}` : '<p class="empty-note">Squad unavailable.</p>'}
+  </div>`;
+}
+
+function renderComparison(left, right) {
+  if (!left || !right) return '<p class="empty-note">Choose two managers.</p>';
+  const leftIds = new Set((left.squad || []).map(player => player.id));
+  const rightIds = new Set((right.squad || []).map(player => player.id));
+  const shared = (left.squad || []).filter(player => rightIds.has(player.id));
+  const onlyLeft = (left.squad || []).filter(player => !rightIds.has(player.id));
+  const onlyRight = (right.squad || []).filter(player => !leftIds.has(player.id));
+  const names = players => players.length
+    ? players.map(player => escapeHtml(player.name)).join(', ')
+    : 'None';
+  const rivalry = rivalryRecord(left.entry, right.entry);
+  const rivalryHtml = rivalry.available
+    ? `<section class="live-rivalry" aria-label="Archive rivalry">
+        <h4 class="live-panel-label">Archive rivalry</h4>
+        <p>${escapeHtml(rivalry.leftName)} ${rivalry.leftTitles} title${rivalry.leftTitles === 1 ? '' : 's'} · ${escapeHtml(rivalry.rightName)} ${rivalry.rightTitles} title${rivalry.rightTitles === 1 ? '' : 's'}.</p>
+        <p>${escapeHtml(rivalry.leftName)} won ${rivalry.leftTitlesOverRight} season${rivalry.leftTitlesOverRight === 1 ? '' : 's'} with ${escapeHtml(rivalry.rightName)} runner-up. ${escapeHtml(rivalry.rightName)} won ${rivalry.rightTitlesOverLeft} with ${escapeHtml(rivalry.leftName)} runner-up.</p>
+        ${rivalry.meetings.length ? `<ul class="live-pick-list">${rivalry.meetings.map(season => `<li>${escapeHtml(season.year)} · ${escapeHtml(season.winner)} beat ${escapeHtml(season.runnerUp)}</li>`).join('')}</ul>` : ''}
+        <p class="live-panel-note">${escapeHtml(rivalry.note)}</p>
+      </section>`
+    : `<section class="live-rivalry" aria-label="Archive rivalry"><h4 class="live-panel-label">Archive rivalry</h4><p class="live-panel-note">${escapeHtml(rivalry.note)}</p></section>`;
+  return `<div class="live-compare-squads">${squadList(left)}${squadList(right)}</div>
+    <h4 class="live-panel-label">Shared</h4>
+    <p>${names(shared)}</p>
+    <h4 class="live-panel-label">Only ${escapeHtml(left.playerName)}</h4>
+    <p>${names(onlyLeft)}</p>
+    <h4 class="live-panel-label">Only ${escapeHtml(right.playerName)}</h4>
+    <p>${names(onlyRight)}</p>
+    ${rivalryHtml}`;
+}
+
+function renderCompareControls(rows) {
+  const options = rows.map(team => `<option value="${team.entry}">${escapeHtml(team.playerName)}</option>`).join('');
+  return `<section class="live-panel" aria-labelledby="live-compare-title">
+    <h3 id="live-compare-title" class="live-panel-title">Compare managers</h3>
+    <div class="live-compare-picks">
+      <label>First manager <select id="compare-a">${options}</select></label>
+      <label>Second manager <select id="compare-b">${options}</select></label>
+    </div>
+    <div id="live-compare-result" aria-live="polite"></div>
+  </section>`;
+}
+
+function bindComparison(rows) {
+  const root = document.getElementById('live-compare');
+  if (!root) return;
+  root.hidden = rows.length < 2;
+  if (rows.length < 2) {
+    root.innerHTML = '';
+    return;
+  }
+  root.innerHTML = renderCompareControls(rows);
+  const first = root.querySelector('#compare-a');
+  const second = root.querySelector('#compare-b');
+  const result = root.querySelector('#live-compare-result');
+  if (rows[1]) second.value = String(rows[1].entry);
+  const draw = () => {
+    const left = rows.find(team => String(team.entry) === first.value);
+    const right = rows.find(team => String(team.entry) === second.value);
+    if (left && right && left.entry === right.entry) {
+      result.innerHTML = '<p class="empty-note">Choose two different managers.</p>';
+      return;
+    }
+    result.innerHTML = renderComparison(left, right);
+  };
+  first.addEventListener('change', draw);
+  second.addEventListener('change', draw);
+  draw();
+}
+
+function showLivePanels(rows) {
+  const ownership = document.getElementById('live-ownership');
+  if (ownership) {
+    ownership.hidden = false;
+    ownership.innerHTML = renderOwnership(rows);
+  }
+  bindComparison(rows);
+}
+
+function hideLivePanels() {
+  for (const id of ['live-ownership', 'live-compare']) {
+    const panel = document.getElementById(id);
+    if (!panel) continue;
+    panel.hidden = true;
+    panel.innerHTML = '';
+  }
+}
+
 export async function loadLiveStandings() {
   const container = document.getElementById('live-widget-content');
   if (!LEAGUE_ID) {
     container.innerHTML = '<div class="empty-note">Set LEAGUE_ID at the top of the script to see live standings.</div>';
+    hideLivePanels();
     return;
   }
 
@@ -180,6 +348,13 @@ export async function loadLiveStandings() {
         lastRank: team.last_rank,
         month: metrics.month,
         gameweek: metrics.gameweek,
+        gameweekGross: metrics.gameweekGross ?? null,
+        hitCost: metrics.hitCost ?? null,
+        chip: metrics.chip ?? null,
+        captain: metrics.captain ?? null,
+        vice: metrics.vice ?? null,
+        yetToPlay: Number.isInteger(metrics.yetToPlay) ? metrics.yetToPlay : null,
+        picksKnown: metrics.picksKnown === true,
         season: metrics.season ?? team.total,
         squad: metrics.squad || [],
       };
@@ -199,12 +374,20 @@ export async function loadLiveStandings() {
         lastRank: 0,
         month: metrics.month,
         gameweek: metrics.gameweek,
+        gameweekGross: metrics.gameweekGross ?? null,
+        hitCost: metrics.hitCost ?? null,
+        chip: metrics.chip ?? null,
+        captain: metrics.captain ?? null,
+        vice: metrics.vice ?? null,
+        yetToPlay: Number.isInteger(metrics.yetToPlay) ? metrics.yetToPlay : null,
+        picksKnown: metrics.picksKnown === true,
         season: metrics.season ?? 'New',
         squad: metrics.squad || [],
       };
     });
     const rows = standingsRows.length ? standingsRows : newEntryRows;
     renderLiveStandings(container, rows);
+    showLivePanels(rows);
     const stale = data.meta?.stale === true || data.meta?.freshness === 'stale';
     const degraded = !stale && (data.meta?.degraded === true || data.meta?.freshness === 'degraded');
     const heading = document.querySelector('#live-widget-section .section-label');
@@ -222,6 +405,7 @@ export async function loadLiveStandings() {
   } catch (error) {
     console.error("Error fetching live FPL data:", error);
     renderNextDeadline(null);
+    hideLivePanels();
     container.innerHTML = '<div class="empty-note">Live standings are temporarily unavailable. Please try again shortly.</div>';
   }
 }

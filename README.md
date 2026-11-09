@@ -7,6 +7,7 @@ Founded in 2008, this league has hosted 18 seasons of high-stakes FPL management
 
 ## Features
 - **Dynamic leaderboard** with All Time / Last 5 / Last 10 filters
+- **Live league:** position change, chips, captain and vice, players still to play, transfer hits, in-league ownership, and a two-manager comparison
 - **Podium**, **timeline**, and cumulative titles chart (Chart.js)
 - **Never won** and **longest drought** panels
 - **Wall of Shame** fun awards

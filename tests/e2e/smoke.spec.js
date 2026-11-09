@@ -12,15 +12,32 @@ async function mockStandings(page) {
       standingsFixture.standings.results.map((manager) => {
         const history = managerHistories[manager.entry];
         const current = history.current.at(-1) ?? {};
+        const squad = manager.entry === 101
+          ? [
+            { id: 11, name: 'Raya', team: 'ARS', position: 1, slot: 1, points: 6, multiplier: 1, captain: false, viceCaptain: true },
+            { id: 33, name: 'Saka', team: 'ARS', position: 3, slot: 3, points: 16, multiplier: 2, captain: true, viceCaptain: false }
+          ]
+          : [
+            { id: 11, name: 'Raya', team: 'ARS', position: 1, slot: 12, points: 0, multiplier: 0, captain: false, viceCaptain: false },
+            { id: 44, name: 'Haaland', team: 'MCI', position: 4, slot: 9, points: 8, multiplier: 1, captain: true, viceCaptain: false }
+          ];
         return [manager.entry, {
           month: current.points ?? 0,
           event: current.event ?? null,
           gameweek: current.points ?? null,
+          gameweekGross: manager.entry === 101 ? (current.points ?? 0) + 4 : null,
+          hitCost: manager.entry === 101 ? 4 : 0,
+          chip: manager.entry === 101 ? 'wildcard' : null,
+          captain: squad.find(player => player.captain) || null,
+          vice: squad.find(player => player.viceCaptain) ? { id: 11, name: 'Raya' } : null,
+          yetToPlay: manager.entry === 101 ? 2 : 0,
+          picksKnown: true,
           season: current.total_points ?? null,
           seasons: history.past.length,
           careerBestPct: history.past[0]?.rank_percentage ? `${history.past[0].rank_percentage}%` : null,
           careerBestSeason: history.past[0]?.season_name ?? null,
-          careerAvgPct: history.past[0]?.rank_percentage ? `${history.past[0].rank_percentage}%` : null
+          careerAvgPct: history.past[0]?.rank_percentage ? `${history.past[0].rank_percentage}%` : null,
+          squad
         }];
       })
     );

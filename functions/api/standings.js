@@ -486,7 +486,18 @@ async function mapWithConcurrency(items, limit, worker) {
   return results;
 }
 
-function squadFromPicks(picks, playersById, teamsById, liveStats, finishedTeamIds) {
+function pendingTeamIdsFrom(fixtures, finishedTeamIds) {
+  const pending = new Set();
+  for (const fixture of fixtures || []) {
+    for (const teamId of [fixture?.team_h, fixture?.team_a]) {
+      if (teamId == null || finishedTeamIds.has(teamId)) continue;
+      pending.add(teamId);
+    }
+  }
+  return pending;
+}
+
+function squadFromPicks(picks, playersById, teamsById, liveStats, finishedTeamIds, pendingTeamIds) {
   const squad = applyProjectedSubs((picks.picks || []).map(pick => {
     const player = playersById.get(pick.element) || {};
     const multiplier = pick.multiplier ?? 0;
@@ -505,11 +516,43 @@ function squadFromPicks(picks, playersById, teamsById, liveStats, finishedTeamId
       captain: Boolean(pick.is_captain),
       viceCaptain: Boolean(pick.is_vice_captain),
     };
-  }), finishedTeamIds).map(publicSquadPlayer);
+  }), finishedTeamIds).map(player => {
+    const pub = publicSquadPlayer(player);
+    const active = player.projectedIn || (player.slot <= 11 && !player.projectedOut);
+    if (active && !player.appeared && pendingTeamIds.has(player.teamId)) pub.toPlay = true;
+    return pub;
+  });
   const projectedGameweek = squad.some(player => player.projectedIn || player.projectedOut)
     ? squad.reduce((sum, player) => sum + player.points, 0) - (picks.entry_history?.event_transfers_cost ?? 0)
     : null;
   return { squad, projectedGameweek };
+}
+
+function hitCostFrom(entryHistory, eventId) {
+  if (!entryHistory || typeof entryHistory !== 'object') return null;
+  if (eventId != null && entryHistory.event != null && entryHistory.event !== eventId) return null;
+  const cost = entryHistory.event_transfers_cost;
+  return Number.isFinite(cost) && cost >= 0 ? cost : null;
+}
+
+function namedPlayer(player) {
+  return player ? { id: player.id, name: player.name } : null;
+}
+
+function livePicksSummary({ squad, projectedGameweek, picks, latest, currentEvent, fixturesKnown }) {
+  const gameweek = projectedGameweek ?? latest?.points ?? null;
+  const eventForHit = projectedGameweek != null ? currentEvent : latest?.event;
+  const hitCost = picks ? hitCostFrom(picks.entry_history, eventForHit) : null;
+  return {
+    gameweek,
+    hitCost,
+    gameweekGross: hitCost != null && Number.isFinite(gameweek) ? gameweek + hitCost : null,
+    chip: typeof picks?.active_chip === 'string' && picks.active_chip.trim() ? picks.active_chip.trim() : null,
+    captain: namedPlayer(squad.find(player => player.captain)),
+    vice: namedPlayer(squad.find(player => player.viceCaptain)),
+    yetToPlay: fixturesKnown ? squad.filter(player => player.toPlay).length : null,
+    picksKnown: Boolean(picks),
+  };
 }
 
 async function loadJsonResource(cache, stats, remember, key, ttl, load) {
@@ -537,6 +580,8 @@ async function buildManagerMetrics(env, data, bootstrap, cache, stats, remember)
   const teamsById = new Map((bootstrap.teams || []).map(team => [team.id, team.short_name]));
   let liveStats = new Map();
   let finishedTeamIds = new Set();
+  let pendingTeamIds = new Set();
+  let fixturesKnown = false;
 
   if (currentEvent) {
     try {
@@ -555,6 +600,8 @@ async function buildManagerMetrics(env, data, bootstrap, cache, stats, remember)
         () => fetchFplJson(fplUrl(env, `/api/fixtures/?event=${currentEvent}`), stats),
       );
       finishedTeamIds = finishedTeams(fixtures);
+      pendingTeamIds = pendingTeamIdsFrom(fixtures, finishedTeamIds);
+      fixturesKnown = Array.isArray(fixtures);
     } catch {
       stats.partialFailures.push('fixtures');
     }
@@ -584,6 +631,8 @@ async function buildManagerMetrics(env, data, bootstrap, cache, stats, remember)
     const latest = current.at(-1);
     let squad = [];
     let projectedGameweek = null;
+    let picksKnown = false;
+    let picksPayload = null;
     if (currentEvent) {
       try {
         const picks = await loadJsonResource(
@@ -601,12 +650,17 @@ async function buildManagerMetrics(env, data, bootstrap, cache, stats, remember)
             return {
               picks: payload.picks,
               entry_history: payload.entry_history ?? null,
+              active_chip: typeof payload.active_chip === 'string' && payload.active_chip.trim()
+                ? payload.active_chip.trim()
+                : null,
             };
           },
         );
         ({ squad, projectedGameweek } = squadFromPicks(
-          picks, playersById, teamsById, liveStats, finishedTeamIds,
+          picks, playersById, teamsById, liveStats, finishedTeamIds, pendingTeamIds,
         ));
+        picksKnown = true;
+        picksPayload = picks;
       } catch {
         stats.partialFailures.push(`picks-${entry}`);
       }
@@ -615,9 +669,24 @@ async function buildManagerMetrics(env, data, bootstrap, cache, stats, remember)
     const month = current.length
       ? current.filter(row => monthEventIds.has(row.event)).reduce((sum, row) => sum + row.points, 0)
       : null;
+    const summary = livePicksSummary({
+      squad,
+      projectedGameweek,
+      picks: picksKnown ? picksPayload : null,
+      latest,
+      currentEvent,
+      fixturesKnown,
+    });
     return [String(entry), {
       month,
-      gameweek: projectedGameweek ?? latest?.points ?? null,
+      gameweek: summary.gameweek,
+      gameweekGross: summary.gameweekGross,
+      hitCost: summary.hitCost,
+      chip: summary.chip,
+      captain: summary.captain,
+      vice: summary.vice,
+      yetToPlay: summary.yetToPlay,
+      picksKnown: summary.picksKnown,
       season: latest?.total_points ?? null,
       event: latest?.event ?? null,
       squad,
