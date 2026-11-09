@@ -316,6 +316,20 @@ function hideLivePanels() {
   }
 }
 
+function hasStandings(data) {
+  return Array.isArray(data?.standings?.results) && Array.isArray(data?.new_entries?.results);
+}
+
+async function fetchStandingsPayload() {
+  const response = await fetch('./api/standings', {
+    headers: { Accept: 'application/json' },
+  });
+  if (!response.ok) throw new Error('Network response was not ok');
+  const data = await response.json();
+  if (!hasStandings(data)) throw new Error('Standings payload was incomplete');
+  return data;
+}
+
 export async function loadLiveStandings() {
   const container = document.getElementById('live-widget-content');
   if (!LEAGUE_ID) {
@@ -325,12 +339,17 @@ export async function loadLiveStandings() {
   }
 
   try {
-    const response = await fetch('./api/standings', {
-      headers: { Accept: 'application/json' },
-    });
-    if (!response.ok) throw new Error('Network response was not ok');
-
-    const data = await response.json();
+    let data = await fetchStandingsPayload();
+    // A cold function can run out of subrequests before every history is stored.
+    // The picks bundle is saved first, so one retry finishes the league.
+    if (data.meta?.incomplete === true) {
+      try {
+        const retry = await fetchStandingsPayload();
+        if (hasStandings(retry)) data = retry;
+      } catch {
+        // Render the first payload. Its status line explains any remaining gap.
+      }
+    }
     renderNextDeadline(data.meta?.nextDeadline);
     const managerMetrics = data.meta?.managerMetrics || {};
     const standingsRows = data.standings.results.map(team => {

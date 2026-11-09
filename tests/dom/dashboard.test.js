@@ -277,6 +277,82 @@ describe('live standings DOM behavior', () => {
     expect(compare.textContent).toContain('Choose two different managers.');
   });
 
+  it('retries once when the first standings payload is incomplete', async () => {
+    const squad = (id, name) => [{ id, name, multiplier: 2, slot: 3, points: 8, captain: true, viceCaptain: false }];
+    const row = (entry, name, total) => ({
+      entry, entry_name: `${name} FC`, player_name: name, rank: entry, last_rank: entry, total
+    });
+    const metric = (playerId, playerName, points) => ({
+      picksKnown: true,
+      month: points,
+      gameweek: points,
+      season: points,
+      captain: { id: playerId, name: playerName },
+      vice: null,
+      yetToPlay: 0,
+      squad: squad(playerId, playerName)
+    });
+    const incomplete = {
+      standings: { results: [row(101, 'Alex', 40)] },
+      new_entries: { results: [] },
+      meta: {
+        fetchedAt: '2025-08-20T12:00:00.000Z',
+        incomplete: true,
+        degraded: true,
+        managerMetrics: { 101: metric(11, 'Saka', 40) }
+      }
+    };
+    const complete = {
+      standings: { results: [row(101, 'Alex', 40), row(202, 'Blair', 30)] },
+      new_entries: { results: [] },
+      meta: {
+        fetchedAt: '2025-08-20T12:00:01.000Z',
+        degraded: false,
+        managerMetrics: {
+          101: metric(11, 'Saka', 40),
+          202: metric(13, 'Haaland', 30)
+        }
+      }
+    };
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => incomplete })
+      .mockResolvedValueOnce({ ok: true, json: async () => complete });
+    const { app } = setupDom(fetchImpl);
+    await app.loadLiveStandings();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const ownership = document.querySelector('#live-ownership');
+    expect(ownership.hidden).toBe(false);
+    expect(ownership.textContent).toContain('Saka');
+    expect(ownership.textContent).toContain('Haaland');
+    expect(ownership.textContent).not.toContain('unavailable');
+  });
+
+  it('renders the first payload when the incomplete retry fails', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          standings: { results: [{ entry: 101, entry_name: 'Alpha', player_name: 'Alex', rank: 1, last_rank: 1, total: 40 }] },
+          new_entries: { results: [] },
+          meta: {
+            incomplete: true,
+            degraded: true,
+            managerMetrics: {
+              101: { picksKnown: true, gameweek: 40, season: 40, captain: { id: 11, name: 'Saka' }, squad: [] }
+            }
+          }
+        })
+      })
+      .mockRejectedValueOnce(new Error('offline'));
+    const { app } = setupDom(fetchImpl);
+    await app.loadLiveStandings();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(document.querySelector('#live-widget-content').textContent).toContain('Alex');
+    expect(document.querySelector('#live-widget-content').textContent).toContain('Saka');
+  });
+
   it('renders the characterized unavailable state after API failure', async () => {
     const { app } = setupDom(vi.fn().mockRejectedValue(new Error('offline')));
     await app.loadLiveStandings();

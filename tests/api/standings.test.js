@@ -209,11 +209,19 @@ describe('GET /api/standings contract', () => {
       month: null,
       event: null,
       gameweek: null,
+      gameweekGross: null,
+      hitCost: null,
+      chip: null,
+      captain: null,
+      vice: null,
+      yetToPlay: 0,
+      picksKnown: true,
       season: null,
       seasons: null,
       careerBestPct: null,
       careerBestSeason: null,
-      careerAvgPct: null
+      careerAvgPct: null,
+      squad: []
     });
   });
 
@@ -709,6 +717,104 @@ describe('FPL request bounds, cache, and stale fallback', () => {
     globalThis.fetch.mockClear();
     await onRequestGet(createContext('https://example.test/api/standings', { FPL_API_ORIGIN: 'javascript:alert(1)' }));
     expect(String(globalThis.fetch.mock.calls[0][0])).toContain('https://fantasy.premierleague.com/');
+  });
+
+  it('loads every squad inside the subrequest budget and finishes histories on the next request', async () => {
+    installMemoryCache();
+    const entries = Array.from({ length: 8 }, (_, index) => index + 1);
+    const standings = {
+      league: { id: 113546, name: 'Fixture League' },
+      standings: {
+        results: entries.map((entry) => ({
+          id: entry,
+          entry,
+          entry_name: `Team ${entry}`,
+          player_name: `Manager ${entry}`,
+          rank: entry,
+          last_rank: entry,
+          total: 100,
+          event_total: 3
+        }))
+      },
+      new_entries: { results: [] }
+    };
+    installUpstream({
+      standings,
+      picks: Object.fromEntries(entries.map((entry) => [entry, {
+        picks: [{ element: 33, position: 3, multiplier: 2, is_captain: true, is_vice_captain: false }]
+      }])),
+      histories: Object.fromEntries(entries.map((entry) => [entry, {
+        current: [{ event: 2, points: 7, total_points: 70 }],
+        past: []
+      }]))
+    });
+
+    const { onRequestGet } = await loadModule();
+    const firstContext = createContext('https://example.test/api/standings', { FPL_SUBREQUEST_BUDGET: 30 });
+    const firstResponse = await onRequestGet(firstContext);
+    const first = await firstResponse.json();
+    await Promise.all(firstContext.pending);
+
+    expect(firstResponse.status).toBe(200);
+    expect(firstResponse.headers.get('Cache-Control')).toBe('no-store');
+    expect(first.meta.incomplete).toBe(true);
+    expect(first.meta.degraded).toBe(true);
+    const firstMetrics = Object.values(first.meta.managerMetrics);
+    expect(firstMetrics).toHaveLength(8);
+    expect(firstMetrics.every((metric) => metric.picksKnown && metric.captain?.name === 'Saka')).toBe(true);
+    const deferred = firstMetrics.filter((metric) => metric.gameweek === 3);
+    const ready = firstMetrics.filter((metric) => metric.gameweek === 7);
+    expect(deferred.length).toBeGreaterThan(0);
+    expect(ready.length).toBeGreaterThan(0);
+
+    const callsAfterFirst = globalThis.fetch.mock.calls.length;
+    const secondResponse = await onRequestGet(createContext('https://example.test/api/standings', {
+      FPL_SUBREQUEST_BUDGET: 30
+    }));
+    const second = await secondResponse.json();
+    const secondUrls = globalThis.fetch.mock.calls.slice(callsAfterFirst).map((call) => String(call[0]));
+
+    expect(secondResponse.headers.get('Cache-Control')).toBe('public, max-age=120');
+    expect(second.meta.incomplete).toBeUndefined();
+    expect(second.meta.freshness).toBe('fresh');
+    expect(Object.values(second.meta.managerMetrics).every((metric) => metric.gameweek === 7 && metric.picksKnown)).toBe(true);
+    expect(secondUrls.some((url) => url.includes('/picks'))).toBe(false);
+    expect(secondUrls.filter((url) => url.includes('/history/'))).toHaveLength(deferred.length);
+  });
+
+  it('keeps standings available when the platform subrequest limit stops later manager calls', async () => {
+    const cache = installCache();
+    let entryCalls = 0;
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes('/entry/')) {
+        entryCalls += 1;
+        if (entryCalls > 2) throw new Error('Too many subrequests');
+      }
+      if (url.includes('/leagues-classic/')) return jsonResponse(clone(standingsFixture));
+      if (url.includes('/bootstrap-static/')) return jsonResponse(clone(bootstrapFixture));
+      if (url.includes('/live/')) return jsonResponse(clone(liveFixture));
+      if (url.includes('/fixtures/')) return jsonResponse([]);
+      if (url.includes('/picks')) return jsonResponse(clone(managerPicks[101]));
+      if (url.includes('/history')) return jsonResponse(clone(managerHistories[101]));
+      throw new Error(`Unexpected upstream URL ${url}`);
+    });
+
+    const { onRequestGet } = await loadModule();
+    const response = await onRequestGet(createContext());
+    const body = await response.json();
+    const putUrls = cache.put.mock.calls.map((call) => String(call[0].url));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(body.standings.results.map((row) => row.entry)).toEqual([101, 202]);
+    expect(body.meta.incomplete).toBe(true);
+    expect(body.meta.managerMetrics['101'].picksKnown).toBe(true);
+    expect(body.meta.managerMetrics['202'].picksKnown).toBe(true);
+    expect(body.meta.managerMetrics['101'].captain).toEqual({ id: 33, name: 'Saka' });
+    expect(putUrls.some((url) => url.includes('picks-bundle'))).toBe(true);
+    expect(putUrls.some((url) => url.includes('last-known-good'))).toBe(false);
+    expect(putUrls.some((url) => url.endsWith('/api/standings'))).toBe(false);
   });
 
   it('reports the chip, hit, captain, and players still to play from the picks already fetched', async () => {
