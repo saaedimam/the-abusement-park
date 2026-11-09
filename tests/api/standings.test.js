@@ -118,6 +118,13 @@ describe('GET /api/standings contract', () => {
           month: 100,
           event: 2,
           gameweek: 50,
+          gameweekGross: null,
+          hitCost: null,
+          chip: null,
+          captain: { id: 33, name: 'Saka' },
+          vice: { id: 22, name: 'Saliba' },
+          yetToPlay: 0,
+          picksKnown: true,
           season: 100,
           seasons: 2,
           careerBestPct: '5%',
@@ -134,6 +141,13 @@ describe('GET /api/standings contract', () => {
           month: 45,
           event: 2,
           gameweek: 45,
+          gameweekGross: null,
+          hitCost: null,
+          chip: null,
+          captain: null,
+          vice: null,
+          yetToPlay: 0,
+          picksKnown: true,
           season: 90,
           seasons: 1,
           careerBestPct: '25%',
@@ -695,6 +709,40 @@ describe('FPL request bounds, cache, and stale fallback', () => {
     globalThis.fetch.mockClear();
     await onRequestGet(createContext('https://example.test/api/standings', { FPL_API_ORIGIN: 'javascript:alert(1)' }));
     expect(String(globalThis.fetch.mock.calls[0][0])).toContain('https://fantasy.premierleague.com/');
+  });
+
+  it('reports the chip, hit, captain, and players still to play from the picks already fetched', async () => {
+    installUpstream({
+      picks: {
+        101: {
+          active_chip: 'wildcard',
+          entry_history: { event: 2, event_transfers_cost: 4, points: 46 },
+          picks: managerPicks[101].picks
+        },
+        202: { picks: [], active_chip: '3xc' }
+      },
+      live: {
+        elements: liveFixture.elements.map(player => ({
+          ...player,
+          stats: { ...player.stats, minutes: 0 }
+        }))
+      },
+      fixtures: [{ team_h: 1, team_a: 11, finished: false }]
+    });
+    const { onRequestGet } = await loadModule();
+    const body = await (await onRequestGet(createContext())).json();
+    const metric = body.meta.managerMetrics['101'];
+
+    expect(metric.chip).toBe('wildcard');
+    expect(metric.hitCost).toBe(4);
+    expect(metric.gameweek).toBe(50);
+    expect(metric.gameweekGross).toBe(54);
+    expect(metric.captain).toEqual({ id: 33, name: 'Saka' });
+    expect(metric.vice).toEqual({ id: 22, name: 'Saliba' });
+    expect(metric.yetToPlay).toBe(3);
+    expect(metric.squad.filter(player => player.toPlay).map(player => player.id)).toEqual([11, 22, 33]);
+    expect(body.meta.managerMetrics['202'].chip).toBe('3xc');
+    expect(body.meta.managerMetrics['202'].yetToPlay).toBe(0);
   });
 
   it('rejects a substitute that would exceed the midfield maximum', async () => {
